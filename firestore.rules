@@ -1,0 +1,506 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4 Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Reusable Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          request.auth.token.email_verified == true &&
+          (
+            request.auth.token.email == 'admin@guardai.ng' ||
+            request.auth.token.email == 'abrahamuwe77@gmail.com'
+          )
+        )
+      );
+    }
+
+    // Validation Blueprints
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'role', 'createdAt']) &&
+        data.keys().hasOnly([
+          'uid', 'fullName', 'username', 'phone', 'email', 'city', 'userState',
+          'bio', 'photoURL', 'profilePicUrl', 'emergencyContact', 'role',
+          'safetyScore', 'trust_score', 'streak', 'subscription', 'verifiedBadge',
+          'followersCount', 'followingCount', 'walletBalance', 'lastStreakDate',
+          'lastActive', 'createdAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 150000)) &&
+        (!('profilePicUrl' in data) || (data.profilePicUrl is string && data.profilePicUrl.size() <= 150000)) &&
+        (!('emergencyContact' in data) || (data.emergencyContact is string && data.emergencyContact.size() <= 160)) &&
+        data.role in ['user', 'admin', 'banned'] &&
+        (!('safetyScore' in data) || data.safetyScore is number) &&
+        (!('trust_score' in data) || data.trust_score is number) &&
+        (!('streak' in data) || data.streak is number) &&
+        (!('subscription' in data) || data.subscription in ['free', 'active', 'pending', 'expired']) &&
+        (!('verifiedBadge' in data) || data.verifiedBadge is bool) &&
+        (!('followersCount' in data) || data.followersCount is number) &&
+        (!('followingCount' in data) || data.followingCount is number) &&
+        (!('walletBalance' in data) || data.walletBalance is number) &&
+        (!('lastStreakDate' in data) || (data.lastStreakDate is string && data.lastStreakDate.size() <= 20));
+    }
+
+    function isValidPublicProfile(data) {
+      return data.keys().hasAll(['userId', 'fullName']) &&
+        data.keys().hasOnly([
+          'userId', 'fullName', 'username', 'bio', 'city', 'userState',
+          'photoURL', 'verifiedBadge', 'trust_score', 'safetyScore', 'streak',
+          'followersCount', 'followingCount', 'totalReports', 'verifiedReports',
+          'totalScans', 'joinedAt'
+        ]) &&
+        isValidId(data.userId) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
+        (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 150000));
+    }
+
+    function isValidFamilyMember(data) {
+      return data.keys().hasAll(['ownerId', 'memberName', 'memberPhone', 'relationship', 'status']) &&
+        data.keys().hasOnly([
+          'ownerId', 'memberName', 'memberPhone', 'relationship', 'photoURL',
+          'lastLat', 'lastLng', 'lastAddress', 'isOnline', 'status', 'lastSeen'
+        ]) &&
+        isValidId(data.ownerId) &&
+        data.memberName is string && data.memberName.size() >= 1 && data.memberName.size() <= 100 &&
+        data.memberPhone is string && data.memberPhone.size() >= 5 && data.memberPhone.size() <= 32 &&
+        data.relationship is string && data.relationship.size() >= 1 && data.relationship.size() <= 48 &&
+        data.status in ['Safe', 'SOS'] &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 150000)) &&
+        (!('lastAddress' in data) || (data.lastAddress is string && data.lastAddress.size() <= 250)) &&
+        (!('lastLat' in data) || data.lastLat is number) &&
+        (!('lastLng' in data) || data.lastLng is number) &&
+        (!('isOnline' in data) || data.isOnline is bool);
+    }
+
+    function isValidScannerLog(data) {
+      return data.keys().hasAll(['userId', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'userId', 'lat', 'lng', 'buildingLat', 'buildingLng', 'address',
+          'vehicleType', 'floorsDetected', 'sensorValue', 'frequency', 'confidence',
+          'safeScore', 'distance', 'direction', 'status', 'createdAt'
+        ]) &&
+        isValidId(data.userId) &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 120 &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 250)) &&
+        (!('vehicleType' in data) || (data.vehicleType is string && data.vehicleType.size() <= 32)) &&
+        (!('direction' in data) || (data.direction is string && data.direction.size() <= 40)) &&
+        (!('lat' in data) || data.lat is number) &&
+        (!('lng' in data) || data.lng is number) &&
+        (!('sensorValue' in data) || data.sensorValue is number) &&
+        (!('confidence' in data) || data.confidence is number);
+    }
+
+    function isValidIncidentReport(data) {
+      return data.keys().hasAll(['userId', 'incidentType', 'incidentAddress', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'reportId', 'userId', 'userName', 'userPhone', 'userState',
+          'incidentState', 'incidentArea', 'incidentAddress', 'incidentType',
+          'description', 'videoUrl', 'videoDurationSec', 'photoUrl', 'gpsLat', 'gpsLng',
+          'videoAuthScore', 'audioMatchScore', 'locationConsistencyScore',
+          'crossReportScore', 'guardAiScore', 'aiVerdict', 'status',
+          'adminDecision', 'adminName', 'adminReason', 'approvedAt',
+          'paymentStatus', 'forwardedTo', 'forwardedAt', 'forwardedState', 'createdAt'
+        ]) &&
+        isValidId(data.userId) &&
+        data.incidentType is string && data.incidentType.size() >= 1 && data.incidentType.size() <= 40 &&
+        data.incidentAddress is string && data.incidentAddress.size() >= 1 && data.incidentAddress.size() <= 250 &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 64 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1500)) &&
+        (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 800000)) &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500000)) &&
+        (!('userName' in data) || (data.userName is string && data.userName.size() <= 120)) &&
+        (!('userPhone' in data) || (data.userPhone is string && data.userPhone.size() <= 32)) &&
+        (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
+        (!('incidentState' in data) || (data.incidentState is string && data.incidentState.size() <= 64)) &&
+        (!('incidentArea' in data) || (data.incidentArea is string && data.incidentArea.size() <= 120));
+    }
+
+    function isValidSubscription(data) {
+      return data.keys().hasAll(['userId', 'plan', 'status', 'amount', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'plan', 'status', 'amount', 'createdAt', 'expiresAt']) &&
+        isValidId(data.userId) &&
+        data.plan in ['Free', 'Monthly', 'Yearly'] &&
+        data.status in ['active', 'pending', 'expired', 'rejected'] &&
+        data.amount is number && data.amount in [0, 5000, 35000];
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['userId', 'plan', 'amount', 'receiptImage', 'status', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'userName', 'plan', 'amount', 'purpose', 'receiptImage', 'status', 'createdAt', 'reviewedAt']) &&
+        isValidId(data.userId) &&
+        data.plan in ['Monthly', 'Yearly'] &&
+        data.amount is number && data.amount in [5000, 35000] &&
+        data.receiptImage is string && data.receiptImage.size() >= 10 && data.receiptImage.size() <= 700000 &&
+        data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+        (!('userName' in data) || (data.userName is string && data.userName.size() <= 120)) &&
+        (!('purpose' in data) || (data.purpose is string && data.purpose.size() <= 120));
+    }
+
+    function isValidSafeBusiness(data) {
+      return data.keys().hasAll(['businessName', 'type', 'address', 'verified', 'ownerId', 'createdAt']) &&
+        data.keys().hasOnly(['businessName', 'type', 'lat', 'lng', 'address', 'rating', 'verified', 'safeScore', 'ownerId', 'createdAt']) &&
+        isValidId(data.ownerId) &&
+        data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 120 &&
+        data.type in ['Church', 'School', 'Mall', 'Hospital', 'Office', 'Market'] &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 250 &&
+        data.verified is bool;
+    }
+
+    function isValidUsageStats(data) {
+      return data.keys().hasAll(['userId', 'name', 'totalScans', 'verifiedReports', 'totalPoints', 'month']) &&
+        data.keys().hasOnly([
+          'userId', 'name', 'avatar', 'totalScans', 'totalReports', 'verifiedReports',
+          'totalUsageDays', 'lastActiveDate', 'totalUsageMinutes', 'totalPoints',
+          'month', 'cheatingFlagged', 'lastActive'
+        ]) &&
+        isValidId(data.userId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 150000)) &&
+        data.totalScans is number && data.totalScans >= 0 &&
+        data.verifiedReports is number && data.verifiedReports >= 0 &&
+        data.totalPoints is number && data.totalPoints >= 0 &&
+        data.month is string && data.month.size() == 7;
+    }
+
+    // COLLECTION: users (Private PII isolated to owner & admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming()) &&
+        incoming().uid == userId && incoming().role == 'user' &&
+        (!('subscription' in incoming()) || incoming().subscription == 'free') &&
+        (!('walletBalance' in incoming()) || incoming().walletBalance == 0) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(userId) && isValidUser(incoming()) && (
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          incoming().uid == existing().uid &&
+          incoming().role == existing().role &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'fullName', 'username', 'phone', 'city', 'userState', 'bio',
+            'photoURL', 'profilePicUrl', 'emergencyContact', 'safetyScore',
+            'trust_score', 'streak', 'lastStreakDate', 'lastActive',
+            'followersCount', 'followingCount'
+          ])
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: public_profiles (No PII)
+    match /public_profiles/{userId} {
+      allow get: if isValidId(userId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isValidId(userId) && isOwner(userId) && isValidPublicProfile(incoming()) && incoming().userId == userId;
+      allow update: if isValidId(userId) && isValidPublicProfile(incoming()) && (
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          incoming().userId == existing().userId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'fullName', 'username', 'bio', 'city', 'userState', 'photoURL',
+            'trust_score', 'safetyScore', 'streak', 'totalReports', 'totalScans'
+          ])
+        ) ||
+        (
+          isSignedIn() &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['followersCount', 'followingCount'])
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: me_profiles
+    match /me_profiles/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        incoming().userId == userId;
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: family_tracking
+    match /family_tracking/{memberId} {
+      allow get: if isValidId(memberId) && isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isValidId(memberId) && isSignedIn() && isValidFamilyMember(incoming()) &&
+        incoming().ownerId == request.auth.uid;
+      allow update: if isValidId(memberId) && isSignedIn() && isValidFamilyMember(incoming()) &&
+        (existing().ownerId == request.auth.uid || isAdmin()) &&
+        incoming().ownerId == existing().ownerId;
+      allow delete: if isValidId(memberId) && isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // COLLECTION: road_scanner, vehicle_scanner, building_scanner, night_watch_alerts
+    match /road_scanner/{scanId} {
+      allow get: if isValidId(scanId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(scanId) && isSignedIn() && isValidScannerLog(incoming()) &&
+        incoming().userId == request.auth.uid && incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    match /vehicle_scanner/{scanId} {
+      allow get: if isValidId(scanId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(scanId) && isSignedIn() && isValidScannerLog(incoming()) &&
+        incoming().userId == request.auth.uid && incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    match /building_scanner/{scanId} {
+      allow get: if isValidId(scanId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(scanId) && isSignedIn() && isValidScannerLog(incoming()) &&
+        incoming().userId == request.auth.uid && incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    match /night_watch_alerts/{alertId} {
+      allow get: if isValidId(alertId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(alertId) && isSignedIn() && isValidScannerLog(incoming()) &&
+        incoming().userId == request.auth.uid && incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: alerts (Only Admin can publish verified alerts to Alert tab)
+    match /alerts/{alertId} {
+      allow get: if isValidId(alertId) && isSignedIn() && (existing().verifiedByGuardAI == true || isAdmin());
+      allow list: if isSignedIn() && (existing().verifiedByGuardAI == true || isAdmin());
+      allow create: if isValidId(alertId) && isAdmin() && incoming().createdAt == request.time;
+      allow update: if isValidId(alertId) && (
+        isAdmin() ||
+        (isSignedIn() && existing().verifiedByGuardAI == true && incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status in ['Seen', 'Resolved'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: subscriptions
+    match /subscriptions/{subId} {
+      allow get: if isValidId(subId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(subId) && isSignedIn() && isValidSubscription(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (
+          (incoming().plan == 'Free' && incoming().status == 'active' && incoming().amount == 0) ||
+          (incoming().plan in ['Monthly', 'Yearly'] && incoming().status == 'pending')
+        );
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: payments
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(paymentId) && isSignedIn() && isValidPayment(incoming()) &&
+        incoming().userId == request.auth.uid && incoming().status == 'PENDING' &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: incident_reports
+    match /incident_reports/{reportId} {
+      allow get: if isValidId(reportId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(reportId) && isSignedIn() && isValidIncidentReport(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().status == 'PENDING VERIFICATION' &&
+        (!('paymentStatus' in incoming()) || incoming().paymentStatus == 'unpaid') &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: police_stations (ADMIN ONLY — NEVER READABLE BY USERS)
+    match /police_stations/{stationId} {
+      allow read, write: if isAdmin();
+    }
+
+    // COLLECTION: safe_business
+    match /safe_business/{businessId} {
+      allow get: if isValidId(businessId) && isSignedIn() && (existing().verified == true || existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().verified == true || existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isValidId(businessId) && isSignedIn() && isValidSafeBusiness(incoming()) &&
+        incoming().ownerId == request.auth.uid && incoming().verified == false &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: home_videos (Verified + Paid ₦5,000 only)
+    match /home_videos/{videoId} {
+      allow get: if isValidId(videoId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isValidId(videoId) && (
+        isAdmin() ||
+        (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['likes', 'likedBy', 'views']) &&
+         (!('likedBy' in incoming()) || (incoming().likedBy is list && incoming().likedBy.size() <= 5000)))
+      );
+    }
+
+    // COLLECTION: user_usage_stats (Real monthly leaderboard)
+    match /user_usage_stats/{statId} {
+      allow get: if isValidId(statId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isValidId(statId) && isSignedIn() && isValidUsageStats(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().verifiedReports == 0 &&
+        (!('cheatingFlagged' in incoming()) || incoming().cheatingFlagged == false);
+      allow update: if isValidId(statId) && isValidUsageStats(incoming()) && (
+        isAdmin() ||
+        (
+          isSignedIn() &&
+          existing().userId == request.auth.uid &&
+          incoming().userId == existing().userId &&
+          incoming().verifiedReports == existing().verifiedReports &&
+          (!('cheatingFlagged' in incoming()) || incoming().cheatingFlagged == existing().cheatingFlagged) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'avatar', 'totalScans', 'totalReports', 'totalUsageDays',
+            'lastActiveDate', 'totalUsageMinutes', 'totalPoints', 'lastActive'
+          ])
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: guard_users_live
+    match /guard_users_live/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        incoming().userId == userId;
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: user_permissions
+    match /user_permissions/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        incoming().userId == userId;
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: user_sessions & screen_time
+    match /user_sessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(sessionId) && isSignedIn() && incoming().userId == request.auth.uid;
+      allow update: if isValidId(sessionId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    match /screen_time/{entryId} {
+      allow get: if isValidId(entryId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create, update: if isValidId(entryId) && isSignedIn() && incoming().userId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: wallet_transactions
+    match /wallet_transactions/{txId} {
+      allow get: if isValidId(txId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // COLLECTION: notifications
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && isSignedIn() && (existing().userId == request.auth.uid || existing().targetAll == true || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || existing().targetAll == true || isAdmin());
+      allow create: if isAdmin();
+      allow update: if isValidId(notifId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: sansa_memory
+    match /sansa_memory/{memoryId} {
+      allow get: if isValidId(memoryId) && isSignedIn() && (existing().isPublicTip == true || isAdmin());
+      allow list: if isSignedIn() && (existing().isPublicTip == true || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // COLLECTION: admin
+    match /admin/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    // COLLECTION: app_settings (Admin edits OPay details; users read for manual payment)
+    match /app_settings/{settingId} {
+      allow get: if isValidId(settingId) && isSignedIn();
+      allow list: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // COLLECTION: admins
+    match /admins/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list, write: if isAdmin();
+    }
+
+    // COLLECTION: follows
+    match /follows/{followId} {
+      allow get, list: if isSignedIn();
+      allow create: if isValidId(followId) && isSignedIn() && incoming().followerId == request.auth.uid;
+      allow delete: if isValidId(followId) && isSignedIn() && existing().followerId == request.auth.uid;
+    }
+
+    // COLLECTION: chats
+    match /chats/{msgId} {
+      allow get: if isValidId(msgId) && isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
+      allow create: if isValidId(msgId) && isSignedIn() &&
+        incoming().senderId == request.auth.uid &&
+        incoming().participants is list &&
+        incoming().participants.size() == 2 &&
+        request.auth.uid in incoming().participants &&
+        incoming().createdAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    // COLLECTION: report_comments
+    match /report_comments/{commentId} {
+      allow get, list: if isSignedIn();
+      allow create: if isValidId(commentId) && isSignedIn() &&
+        incoming().userId == request.auth.uid &&
+        incoming().text is string && incoming().text.size() >= 1 && incoming().text.size() <= 500 &&
+        incoming().createdAt == request.time;
+      allow delete: if isAdmin();
+    }
+  }
+}

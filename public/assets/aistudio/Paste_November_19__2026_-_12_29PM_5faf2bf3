@@ -1,0 +1,934 @@
+BUILD GUARD AI FROM SCRATCH - WORLD CLASS, REAL, LIVE, SIMPLE, ADDICTIVE
+
+You are the lead engineer + lead designer for Guard AI. Build a complete, production-ready, single-page app in one HTML file using Tailwind + JavaScript + Firebase v10 (modular SDK via CDN).
+
+CORE RULE - NO DEMO, NO FAKE:
+Never hardcode users, threats, buses, buildings, percentages, prices, or alerts. If there is no live data, show "WAITING FOR LIVE SIGNAL..." or "No data yet - Walk / Scan to create live data". All data must come from live phone sensors + live Firebase Firestore. No setTimeout fake alerts, no placeholder lorem.
+
+BRAND & DESIGN - WORLD CLASS, SIMPLE, UNIQUE, ADDICTIVE:
+Design language: Dark Premium Nigerian Safety App. Background #050B14, Cards #0C1626, Primary Blue #2E9BFF, Safe Green #00E67A, Warning Yellow #FFC400, Danger Red #FF2D55, Cyan #00E5FF for Safe Exits.
+Font: Inter, rounded, large touch targets, 1-tap actions.
+Addictive loop: Every screen has a LIVE pulsing dot, a LIVE score, and a streak. User opens app -> sees "You are Protected" -> sees 3 Safe Exits always -> gets 1 daily Safety Score. Make it feel like WhatsApp + Google Maps + Apple Health combined - so simple a 12-year-old in Lagos can use it without tutorial. No long forms. 1 button = 1 action.
+Top of every screen: GUARD AI logo + LIVE status + LIVE time + LIVE city from real GPS.
+
+FIREBASE - YOU MUST CONNECT EVERYTHING:
+Use Firebase Auth + Firestore. Use this config placeholder at top, easy to replace:
+const firebaseConfig = { apiKey: "YOUR_API_KEY", authDomain: "YOUR_PROJECT.firebaseapp.com", projectId: "YOUR_PROJECT", storageBucket: "YOUR_PROJECT.appspot.com", messagingSenderId: "YOUR_SENDER_ID", appId: "YOUR_APP_ID" };
+Firestore collections - CREATE EXACTLY THESE, no other names:
+1. users - signup data
+2. family_tracking - live family locations
+3. road_scanner - live road scans
+4. vehicle_scanner - live bus / danfo / BRT scans (also called bus_scanner)
+5. building_scanner - live building scans
+6. alerts - all alerts
+7. subscriptions - plans + payment status
+8. me_profiles - Me tab profile
+9. admin - admin controls
+10. sansa_memory - Sansa memory, only admin
+11. incident_reports - user reports
+12. safe_business - verified safe businesses
+Every write must go to its collection. Every read must read from its collection. Use onSnapshot for LIVE real-time updates. Use serverTimestamp() for all timestamps.
+
+AUTH - SIGN UP / LOGIN FLOW (users collection):
+Screen 1: Splash - GUARD AI shield animation, "You Are Protected".
+Screen 2: Sign Up - Full Name, Phone Number, Email, Password, City (auto from GPS), Emergency Contact Name + Phone. On Sign Up -> createUserWithEmailAndPassword + create doc in users collection: { uid, fullName, phone, email, city, emergencyContact, role: "user", createdAt: serverTimestamp(), safetyScore: 100, streak: 0 }. 
+Screen 3: Login - Email + Password.
+Screen 4: Verify Phone (optional) - show "Verified" badge when done.
+If user is admin (email == admin@guardai.ng OR users doc role == "admin"), show Admin Tab. Otherwise hide Admin Tab completely. Never show admin to normal users.
+
+BOTTOM NAVIGATION - 6 TABS VISIBLE TO ALL + 1 HIDDEN:
+[Home] [Family] [Weapon] [Alerts] [Safe Business] [Me] - Plus [Admin] only if role == "admin".
+All tabs connected to Firebase, all live.
+
+TAB 1: HOME / DASHBOARD
+- Top card: "You Are Protected" + LIVE Safety Score (calculated from live scans, not hardcoded) + Streak days.
+- Live card: Your current location from navigator.geolocation.watchPosition - show real lat, lng, city, street.
+- 3 buttons: Scan Road, Scan Vehicle, Scan Building - each goes to Weapon Tab.
+- Daily Tip from Sansa: 1 short tip, pulled from sansa_memory collection, not hardcoded.
+- Emergency SOS button: Big red button, on tap -> creates doc in alerts collection + incident_reports collection with live location, live time, userId.
+
+TAB 2: FAMILY TRACKING (family_tracking collection)
+- Add Family Member: Name, Phone, Relationship. Creates doc in family_tracking: { ownerId, memberName, memberPhone, relationship, lastLat, lastLng, lastSeen: serverTimestamp(), status: "Safe" }.
+- List shows each member with LIVE map dot, LIVE last seen time from Firestore, LIVE distance from you (calculated from real lat/lng).
+- Tap member -> Live map with 3 Safe Exits from member's location.
+- Panic: If member presses SOS, their doc status becomes "SOS" in real time, you get red banner + sound.
+- No fake family. If no family added, show "Add your first family member - protect them live".
+
+TAB 3: WEAPON TAB - THE CORE (3 sub-scanners, each to its own collection)
+Header: "Weapon Scanner - Live Gun Resonance + Live Threat Echo"
+All 3 scanners use REAL sensors: getUserMedia AudioContext for gun metal frequency, Magnetometer for metal spike, DeviceMotion for gait, Geolocation for position. No fake alerts.
+
+3A. ROAD SCANNER -> road_scanner collection:
+- Button: "Start Live Road Scan". Uses live GPS + live compass + live audio.
+- Shows LIVE road ahead as dotted line: 3 blinking dotted lines to 3 Safe Exits calculated from live GPS path: Exit 1 = way you came, Exit 2 = opposite direction, Exit 3 = nearest side street from live map.
+- Live scan result: GREEN = "Road Baseline Live", YELLOW = "Live Anomaly", RED = "Live Spike - Investigating". If spike, save doc to road_scanner: { userId, lat, lng, sensorValue, frequency, status, createdAt } + also create doc in alerts.
+- Shows LIVE list of past road scans from road_scanner collection for this user.
+
+3B. VEHICLE SCANNER (Bus / Danfo / BRT) -> vehicle_scanner collection:
+- Button: "I Entered A Vehicle". User selects type: BRT / Danfo / Keke / Car.
+- App starts live scanning inside vehicle: 2m-3m radius from live audio + magnetometer.
+- Shows vehicle as live card with YOU as blue dot inside, other passengers as grey dots from live Bluetooth count.
+- 3 Blinking Dotted Lines always visible: Green to Front Exit, Yellow to Back Exit, Cyan to Window Exit.
+- If live gun metal spike -> RED banner "Gun Resonance Live - Seat X - Do Not Move" + saves to vehicle_scanner + alerts.
+- If group pattern (live Bluetooth count jumps) -> YELLOW "Live Group Movement".
+- Save: { userId, vehicleType, lat, lng, sensorValue, status, createdAt }
+
+3C. BUILDING SCANNER -> building_scanner collection:
+- Button: "I Entered A Building". App auto-draws building LIVE, no pre-made image.
+- Auto-draw logic: Barometer / pressure for floor change = new floor div, Step counter + compass for rooms/corridors, WiFi strength for walls. If no sensor, show "Walk to draw building live".
+- Building view: Live div-based 3D cutaway, floors created by code as user walks. Each floor colored live: GREEN = baseline, YELLOW = anomaly, RED = spike.
+- Shows LIVE labels ONLY if from live sensor: "Gun Resonance Live - Floor [live floor from barometer]" + "Wanted Echo Live - Gait match from live accelerometer" + "Group Echo Live - [live Bluetooth count] devices moved together".
+- 3 Blinking Dotted Lines from live YOU dot to 3 live exits: Exit 1 = entry path from GPS history, Exit 2 = opposite direction, Exit 3 = nearest stairwell from barometer history.
+- Save to building_scanner: { userId, buildingLat, buildingLng, floorsDetected, sensorValue, status, createdAt } + alerts if threat.
+
+TAB 4: ALERTS (alerts collection)
+- Live feed from alerts collection using onSnapshot, ordered by createdAt desc.
+- Each alert: type (Gun / Wanted / Group / SOS / Family), live location, live time, status: New / Seen / Resolved.
+- Tap alert -> shows live map + 3 Safe Exits.
+- Button: "Mark Safe" updates alert doc status.
+- No fake alerts. If no alerts, show "All Clear - You Are Protected".
+
+TAB 5: SAFE BUSINESS (safe_business collection)
+- Map + List of verified safe businesses from safe_business collection: { businessName, type, lat, lng, rating, verified: true, safeScore }.
+- Add Business: Business owners can add their business, goes to safe_business with verified: false, admin approves.
+- Filter: Church, School, Mall, Hospital, Office, Market.
+- Each card: "Verified Safe by Guard AI" badge, LIVE distance from you.
+- Tap -> Directions with 3 Safe Exits.
+
+TAB 6: ME TAB (me_profiles collection)
+- Profile: Photo, Name, Phone, Email, City, Emergency Contact - all pulled from me_profiles + users, editable, saves back to me_profiles.
+- My Safety Score, My Streak, My Total Scans (count from road_scanner + vehicle_scanner + building_scanner collections, calculated live, not hardcoded).
+- My Incident Reports: Live list from incident_reports collection for this user.
+- Settings: Notifications On/Off, Location Sharing On/Off, Language (English / Pidgin / Yoruba / Hausa / Igbo), Dark Mode.
+- Logout button.
+
+TAB 7: SUBSCRIPTION (subscriptions collection)
+- Show LIVE current plan from subscriptions collection for this user: Free / Guard Plus / Guard Family / Guard Business.
+- 3 Plans (real Stripe / Paystack placeholder, not fake payment):
+Free: 1 Road Scan/day, Family 1 member, Basic Alerts.
+Guard Plus: Unlimited Road + Vehicle + Building Scan, Family 5 members, Priority Alerts.
+Guard Family: Unlimited, Family 10 members, SOS for all.
+Guard Business: Unlimited, Safe Business listing, Admin Dashboard for business.
+- Button "Upgrade" -> creates doc in subscriptions: { userId, plan, status: "pending", createdAt } + shows "Contact Admin to activate" (real flow, no fake success).
+- Show LIVE subscription status from Firestore.
+
+TAB 8: INCIDENT REPORT (incident_reports collection) - Accessible from Me + Home + Alerts
+- Form: What happened? (Gun / Robbery / Kidnap / Boko Haram / Accident / Other), Where? (auto from live GPS), When? (auto live time), Description, Photo (optional, upload to Firebase Storage if available, else save base64).
+- On Submit -> creates doc in incident_reports: { userId, type, lat, lng, description, photoUrl, status: "New", createdAt } + also creates alert in alerts collection.
+- Shows live status: New -> Under Review -> Resolved (updated by Admin).
+
+TAB 9: ADMIN TAB - ONLY IF role == "admin", HIDDEN OTHERWISE (admin collection)
+- Dashboard: LIVE counts from Firestore: Total Users, Total Alerts Today, Total Scans Today, Total Subscriptions, Total Incident Reports - all calculated live with queries, not hardcoded.
+- Manage Users: List from users collection, can change role, ban.
+- Manage Alerts: List from alerts, can resolve.
+- Manage Incident Reports: List from incident_reports, can change status to Resolved.
+- Manage Safe Business: List from safe_business, can approve verified: true/false.
+- Manage Subscriptions: List from subscriptions, can activate plan.
+- All admin actions must write to admin collection log: { adminId, action, targetId, createdAt }.
+
+
+ADDICTIVE & EASY LOGIC:
+- Every day user opens app, Safety Score +1, Streak +1, saved to users collection.
+- After each live scan, show "You just protected yourself +10 points" and update safetyScore in users.
+- Push: "Your family member Ada just arrived home safe" - from family_tracking live update.
+- 1-tap everything. No screen should need more than 2 taps to scan or SOS.
+
+TECHNICAL:
+- Single HTML file, Tailwind CDN, Firebase v10 CDN.
+- Use onSnapshot everywhere for live.
+- Handle permission errors gracefully: If user denies microphone/location, show "Permission needed to protect you live - Tap to allow" - never fake data.
+- Mobile-first, works on WhatsApp browser, works offline with cached last scan, syncs to Firebase when back online.
+- Add comments in code marking each collection: // COLLECTION: users, // COLLECTION: family_tracking, etc. So it is easy to train / edit later.
+
+Build it now, complete, working, no demo data, no placeholder text.
+
+2
+FIX SUBSCRIPTION TAB FOR GUARD AI - USE THESE EXACT PLANS, NO OTHER PRICES, NO FAKE DATA
+
+Replace the entire Subscription Tab with this. All prices in Naira ₦. All logic must be LIVE from Firebase subscriptions collection + live scan count.
+
+PLANS - EXACTLY THESE 3:
+
+1. FREE - ₦0
+- 2 Scans Per Day ONLY
+- 2 scans = total combined across Road Scanner + Vehicle Scanner + Building Scanner for that day. Not 2 per scanner. 2 total.
+- Family Tracking: 1 member only
+- Alerts: Basic alerts only
+- Safe Business: View only
+- Button: "Current Plan" if user is on Free, else "Downgrade to Free"
+
+2. MONTHLY - ₦5,000 / month
+- Unlimited Scans - Road + Vehicle + Building, unlimited per day
+- Family Tracking: Up to 10 members
+- Alerts: Priority Alerts + Instant SOS for family
+- Safe Business: View + Save favourites
+- Sansa Daily Tip
+- Button: "Subscribe Monthly - ₦5,000"
+
+3. YEARLY - ₦35,000 / year (Save ₦25,000 - You pay for 7 months, get 12)
+- Everything in Monthly
+- Unlimited Scans - Road + Vehicle + Building
+- Family Tracking: Up to 20 members
+- Alerts: Priority + Family SOS + Admin Priority Support
+- Safe Business: View + Save + Add Your Business (1 listing free)
+- Button: "Subscribe Yearly - ₦35,000 - BEST VALUE"
+
+LIVE ENFORCEMENT LOGIC - MUST BUILD THIS, NO DEMO:
+
+Free Plan Limit:
+- Every time user presses Scan, count today's scans LIVE:
+  Count docs in road_scanner + vehicle_scanner + building_scanner where userId == current user AND createdAt is today (from 00:00 to 23:59 WAT).
+- If user plan == "Free" AND today's scan count >= 2:
+    - BLOCK the scan. Do NOT start sensor.
+    - Show popup: "Free Limit Reached - You have used 2 / 2 scans today. Upgrade to Monthly ₦5,000 for Unlimited Scans or Yearly ₦35,000 to continue protecting yourself."
+    - Buttons: [Upgrade Monthly ₦5,000] [Upgrade Yearly ₦35,000] [Wait Till Tomorrow]
+- If user plan == "Monthly" OR "Yearly" AND subscription status == "active": Allow unlimited scans, never block.
+- Show LIVE counter on Subscription Tab + on Home + on Weapon Tab: "Scans Today: X / 2" for Free, or "Scans Today: X / Unlimited" for Paid. X must be real count from Firestore, updated with onSnapshot, not hardcoded.
+
+SUBSCRIPTION TAB UI:
+- Top: Show LIVE current plan from subscriptions collection: "Your Plan: FREE" or "Your Plan: MONTHLY - Active until [real expiresAt date from Firestore]" or "Your Plan: YEARLY - Active until [real date]"
+- Middle: Show LIVE Scans Today counter with progress bar: Free shows 0/2, 1/2, 2/2. Paid shows Unlimited with green check.
+- Cards: 3 cards side by side, Free left, Monthly middle (highlighted with BLUE border + badge "MOST POPULAR"), Yearly right (highlighted with GREEN border + badge "BEST VALUE - SAVE ₦25,000").
+- Each card must show: Price big: "₦0", "₦5,000 / month", "₦35,000 / year", Features list, Button.
+- Bottom: "How to Pay" - Paystack / Bank Transfer - On tap Upgrade, create doc in subscriptions collection: { userId, plan: "Monthly" or "Yearly", status: "pending", amount: 5000 or 35000, createdAt: serverTimestamp() } + show "Payment pending - Admin will activate you in 5 minutes. Keep your receipt." - Do NOT fake a successful payment. Real activation happens when Admin changes status to "active" in Firebase.
+
+FIREBASE - subscriptions collection fields MUST BE:
+{ userId, plan: "Free" / "Monthly" / "Yearly", status: "active" / "pending" / "expired", amount: 0 / 5000 / 35000, createdAt, expiresAt }
+- Free users: On Sign Up, automatically create subscriptions doc: { userId, plan: "Free", status: "active", amount: 0, createdAt, expiresAt: null }
+- When user upgrades, create NEW doc with status: "pending", do not delete old one. Admin activates by updating status to "active" and setting expiresAt: Monthly = +30 days, Yearly = +365 days from now.
+
+TEST CHECKLIST FOR SUBSCRIPTION:
+1. New user signs up -> subscriptions collection has Free doc, amount 0.
+2. Free user scans 1st time -> counter shows 1/2, scan works, road_scanner gets doc.
+3. Free user scans 2nd time -> counter shows 2/2, scan works.
+4. Free user tries 3rd scan same day -> BLOCKED, popup shows Upgrade Monthly ₦5,000 / Yearly ₦35,000. No scan doc created.
+5. Next day, counter resets to 0/2 automatically because count is for today only.
+6. User taps Upgrade Monthly -> subscriptions gets new doc with plan Monthly, amount 5000, status pending.
+7. Admin changes status to active -> User can now scan unlimited, counter shows Unlimited.
+8. Yearly price shows ₦35,000, not ₦60,000. Monthly shows ₦5,000. No other prices anywhere.
+
+Build this subscription logic now. Remove all old prices. Use only ₦0, ₦5,000, ₦35,000.
+
+3
+REBUILD GUARD AI - FULL PROMPT - APPLY ALL FIXES, NO FAKE DATA, NO DEMO
+
+You are rebuilding Guard AI. Apply EVERY fix below. Do not skip any. Do not keep any old fake text. Do not invent data. If Firebase is empty, show "No live data yet". Use ₦ NOT # or [] for Naira. Example: ₦5,000, ₦35,000.
+
+=== 1. GLOBAL RULES FOR ALL TABS ===
+- Add Google AdMob banner, SMALL, at the bottom of EVERY tab: Home, Family Tracking, Alert, Safe Haven, Me, Road Scanner, Vehicle Scanner, Building Scanner. Reserve 50px height at bottom for ads. Ads must never cover Scan buttons or GPS.
+- NO user can post directly to Alert tab. ALL user reports go to Guard AI first for verification. Only Guard AI (70% AI + 30% Human Admin) can publish to Alert tab. This prevents false alarm panic.
+- Report & Earn ₦5,000 button must be on: Home tab, Family Tracking tab, Alert tab, Safe Haven tab, Me tab, Road Scanner, Vehicle Scanner, Building Scanner.
+- Remove ONLY the Nigeria Grid from Sign Up page. Keep everything else.
+- Home page: REMOVE the "3 Safe Exit" card completely. It is useless.
+- Home page: REMOVE sentence "real telemetry from firebase. No fake alert." from Live Sector Threat Activity. Replace with: "Live verified alerts only."
+- Home page: REMOVE "Patrol Grid Position Live GPS Required 4.88470 6.9746" style coordinates. Users do NOT understand coordinates. Replace with HUMAN location: Use reverse geocoding (Google Maps Geocoding API) to show: "You are at: 12 Allen Avenue, Ikeja, Lagos" + Street Name + Landmark + "Moving" / "Stopped". Never show raw lat/lng to users. Admin can see lat/lng in Admin panel only.
+- Family Circle tab: REMOVE "0 fake member" sentence. Keep only: "Real-time family GPS tracking". GPS Map must be TALL, full screen height minus buttons + ads. Must fit 10-20 members. Use Google Maps with exact pins, not guesswork. Each member pin = their profile picture in a circle. If no picture, use blue circle with initial.
+- Alert tab: Rename button "Report Threat" to "Report & Earn ₦5,000".
+- Me tab: User can upload profile picture from camera/gallery. Crop to circle. Save to Firebase Storage path users/{uid}/profile.jpg and save URL to users/{uid}.photoURL.
+- SOS Button: Fix it. Do NOT show "Your live satellite GPS 4.88535, 6.97813". Show: "You are at: [Street Name, Area, City] - Help is coming". Dispatch button must show: "Dispatching to [Street Name, Area]" + estimated time + nearest safe route name. REMOVE robotic "3 Immediate Safe Exit" and REMOVE "Cyan Protocol" - users do not understand it. Replace with plain language: "1. Stay inside. 2. Go to [Nearest Safe Place Name - e.g. Ikeja City Mall]. 3. Call [Emergency Contact]." Use real place names from Google Places API.
+
+=== 2. PROFILE SYSTEM - FACEBOOK VIBE, ADDICTIVE ===
+Every user, including Admin, has a full profile:
+- Profile picture, Full Name, Username, Bio, City, Joined Date, Verified Badge if verified
+- Follow button, Followers count, Following count
+- Stats: Total Reports, Verified Reports, Total Scans Today, Total Scans This Month, Current Ranking (e.g. #12 Reporter)
+- When you click any user anywhere, open their profile page.
+- Users can Follow / Unfollow, Chat 1-to-1 (chat collection), Like and Comment on verified reports.
+- Addictive loop: Daily streak, Scan streak, Report streak. Show "You have scanned 2/2 today" for Free plan.
+- Leaderboard tab inside Me: Top Scanner of the Month (most scans) + Top Reporter of the Month (most VERIFIED reports). Show top 10 with profile pictures, rank, points. Update from Firebase live.
+
+=== 3. REPORT & EARN ₦5,000 - VERIFICATION PHYSICS + LOGIC ===
+This is the core. Do NOT auto-pay. Do NOT auto-publish.
+
+Flow:
+1. User taps "Report & Earn ₦5,000"
+2. Form: What happened? (Gunshot / Robbery / Kidnapping / Accident / Fire / Other) + Location (auto-filled human address, NOT coordinates) + Video COMPULSORY (15-60 seconds, must be recorded in app, cannot upload old gallery video) + 1 Photo + Description.
+If no video, button is disabled: "Video is compulsory to earn ₦5,000".
+3. Submit -> Goes to status "PENDING VERIFICATION" in collection incident_reports. User sees: "Your report is with Guard AI. Verifying..."
+4. Guard AI Verification - 70% AI + 30% Human - Use REAL verifiable signals, NOT fake physics:
+   GUARD AI VERIFICATION SCORE FORMULA (Use this, do not invent fake resonance):
+   V = (0.35 * Video_Auth) + (0.25 * Audio_Match) + (0.20 * Location_Consistency) + (0.20 * Cross_Report)
+   - Video_Auth (0-1): Check video metadata: timestamp within 10 mins of report, GPS EXIF matches reported location within 500m, video duration >=15s, no edit metadata. If fails, score 0.
+   - Audio_Match (0-1): Use on-device Audio Classification (TensorFlow Lite / YAMNet). Classify audio as: gunshot-like impulse vs firecracker vs car backfire vs shouting. Output confidence 0-1. This is PROBABILISTIC, not 100%. Show confidence: "Audio: 82% gunshot-like". Never say "100% confirmed".
+   - Location_Consistency (0-1): Reported human address reverse-geocoded lat/lng must be within 500m of video GPS + user GPS at report time. Use Haversine: d = 2*R*asin(sqrt(sin²((lat2-lat1)/2) + cos(lat1)*cos(lat2)*sin²((lng2-lng1)/2))), R=6371000. If d > 500m, score 0.
+   - Cross_Report (0-1): If 2+ independent users report same location within 1km + 30 mins, +0.5. If 1 user only, 0.2.
+   If V >= 0.75 -> AI marks "LIKELY TRUE" and forwards to Admin for human check.
+   If V < 0.75 -> AI marks "NEEDS HUMAN REVIEW" and DOES NOT publish to Alert.
+5. Human Check (30%): Admin in Admin Tab sees pending report + video + score + map. Admin taps Approve / Reject.
+6. ONLY after Admin Approves: 
+   - Report is published to Alert tab as VERIFIED by Guard AI, with video, location name, time.
+   - Sansa (sansa_memory) forwards: "Sir, Verified Report from [User Name] at [Location]. Video verified. Score [V]. Ready to publish."
+   - User wallet in subscriptions/wallets is credited ₦5,000. Create doc in wallet_transactions: {userId, amount: 5000, type: "report_reward", reportId, status: "credited", createdAt}. User sees "₦5,000 Credited - Verified Report".
+   - User ranking +1 verified report.
+   If Rejected: User sees "Report not verified. No reward. Reason: [Admin reason]". No panic, no Alert post.
+
+=== 4. ADMIN TAB - ANALYTICS ===
+Admin sees:
+- ALL users who signed up, with profile picture, name, last active.
+- For each user: Total minutes today, Total hours this week, Total time spent in Guard AI (from user_sessions collection: login time - logout time).
+- List: "Not logged in last 24 hours" - users where lastActive < now - 24h, in red.
+- For each user: "Spends most time in: Road Scanner (65%), Family Tracking (20%)..." Calculate from screen_time collection: {userId, screen, seconds}.
+- Pending Reports queue for human verification with Video player + V Score.
+
+=== 5. AUTOMATIC GOOD WISH MESSAGES ===
+Use Firebase Cloud Functions scheduled:
+- Every Friday 7:00 AM Africa/Lagos: Send push to ALL users: "Happy Weekend, [First Name]! Stay safe with Guard AI. Scan before you move. - Guard AI Family" + save to notifications collection.
+- Every Sunday 7:00 PM Africa/Lagos: Send: "New week, new protection. Good evening [First Name], Guard AI is watching over you this week. Check your Family Circle. - Sansa"
+Use FCM. Do not spam. 1 per week each.
+
+=== 6. SUBSCRIPTION PLANS - FIX NAIRA DISPLAY ===
+Arrange cleanly in Me tab -> Subscription:
+- Free: ₦0 - 2 scans/day, 1 family member, No Report & Earn
+- Monthly: ₦5,000 / month - Unlimited scans, 10 family members, Report & Earn enabled
+- Yearly: ₦35,000 / year - Unlimited scans, 20 family members, Report & Earn + Priority Dispatch
+Show with ₦ symbol correctly. Use Naira sign ₦, not # or [].
+
+=== 7. ROAD SCANNER - REAL IMPLEMENTATION, NO FAKE PHYSICS ===
+UI: GPS map TALL to bottom. Leave little space at bottom for 3 buttons: [Scan] [Deroute] [Report & Earn ₦5,000] + 50px Ads space. When user taps Scan, button changes to [Stop Scan].
+GPS: Show user as: If walking -> profile picture circle. If in vehicle -> profile picture inside a car icon. If in building -> profile picture inside a small house icon. Detect mode with REAL formula below.
+Movement Mode Detection (Use this):
+- Get speed from GPS: v = distance / time using Haversine between last 2 GPS points, smoothed over 5 seconds.
+- Get accelerometer variance: var = variance of accelerometer magnitude over 3 seconds.
+- If v < 1.5 m/s AND var > 0.3 -> WALKING
+- If v > 6 m/s AND var < 0.15 -> IN VEHICLE
+- If GPS accuracy drops, WiFi SSID stable for >5 mins, and v < 0.5 m/s, and barometer stable -> IN BUILDING (show "In Building" + building name from Places API if available).
+- Never guess. If unsure, show "Walking".
+
+Scan Function - HONEST GUNSHOT DETECTION:
+When Scan is ON:
+- Show a CLEAR radar circle, 200m radius, light blue, transparent 30%, revolving, that does NOT cover street names or location names. Radar is visual only.
+- Use phone microphone + on-device ML (YAMNet / custom gunshot classifier) to listen for impulsive sounds: Sudden peak > 90dB, rise time < 5ms, decay < 200ms. Calculate: Sound Level + Spectral pattern. If confidence > 0.75, mark as "Possible Gunshot Detected - 78% confidence". Show a small RED animated flag at ESTIMATED direction (direction from microphone stereo difference + user heading, NOT exact pinpoint - phones cannot pinpoint 200m away). Label: "Possible gunshot around [Street Name] - Verify".
+- GPS turns RED tint + banner on top of GPS: "Possible Gunshots Ahead - [Street Name]". If no detection, GPS stays normal.
+- Do NOT claim 100% or "exact place". Always show confidence and ask user: "Did you hear it? Confirm / False Alarm". User confirmation increases V score.
+- Battery: Scan auto-stops after 5 mins. Show "Stop Scan" to save battery.
+
+Deroute Function - REAL SAFE ROUTING:
+When user taps Deroute:
+- Use Google Directions API with avoid area = 500m circle around flagged location.
+- Formula: Find 2 alternative routes where distance to threat > 500m, and route uses main roads (road class >= residential). Show SAFEST route as DOTTED BLINKING BLUE LINE on GPS, with turn-by-turn street names: "Turn left on Allen Avenue, then right to Opebi Road".
+- Show: "Safe Route via [Road Name] - 1.2km - 8 mins". If no safe route, show "Stay where you are. Do not move."
+
+=== 8. VEHICLE SCANNER - REAL IMPLEMENTATION ===
+UI: GPS TALL to bottom. Buttons: [Scan] [Next Vehicle] [Report & Earn ₦5,000] + Ads space. Scan -> [Stop Scan].
+When Scan is ON:
+- Show clear radar 3m radius around user, transparent, revolving, not covering street names.
+- Use Camera + ML Kit Object Detection to detect vehicles in camera view. For each vehicle in view, show card: "Vehicle 1 - [Color, Type] - [Plate if visible]".
+- To find SAFE vehicles: Check live data: Does this vehicle have a Guard AI verified driver? Does it have 2+ positive reports? If yes, mark "Guard AI Safe - Verified Driver". If unknown, mark "Unknown - Scan with caution". Do NOT invent safe status.
+- Show dotted blinking line to up to 3 vehicles, max 3. If only 1 visible, show 1. If 2, show 2. Never fake 3.
+- Vehicle Gun Scan: 20 seconds timer. User points camera at vehicle. Use Camera image + ML to detect VISIBLE gun shape only. For HIDDEN gun: PHONES CANNOT DETECT HIDDEN GUNS. Do NOT fake "gun resonance". Instead: Use audio + visual + driver verification. If visible gun shape detected with confidence >0.80, show banner above GPS: "Visible Gun Found - Do NOT Enter - Report". If no visible gun, show: "No visible gun found. Hidden items cannot be detected by phone - Use caution." This is honest and saves life.
+- Next Vehicle: When tapped, clear current 3, scan next 3 vehicles within 3m, or next in camera view.
+- Battery: Scan stops after 20 sec per vehicle or when user taps Stop Scan.
+
+=== 9. BUILDING SCANNER - REAL IMPLEMENTATION ===
+UI: GPS TALL to bottom. Buttons: [Scan] [Resonance] [Report & Earn ₦5,000] + Ads space. Scan -> [Stop Scan].
+When Scan is ON:
+- Radar 100m radius, transparent, revolving, not covering street names.
+- Scan = Camera + ML for visible threats: visible gun, large crowd, fire, smoke. 20 seconds scan.
+- Resonance Button: RENAME its function honestly. Do NOT claim phone can detect hidden guns through walls. Resonance = Audio Resonance Check: Phone plays no sound, it listens for 20 seconds for gunshot-like impulses inside building using same Audio Classification as Road Scanner. If detected, show: "Possible Hidden Threat Audio Detected - 75% confidence - Do Not Enter". If not, show: "No gunshot audio detected. Phone cannot see through walls. Use caution."
+- If visible gun found: Banner above GPS: "Visible Gun Found in Building - Do Not Enter". If hidden audio detected: "Possible Hidden Gun Audio Found - Do Not Enter".
+- Show user avatar same as Road Scanner: walking = profile pic, vehicle = car icon, building = house icon.
+
+=== 10. FINAL CHECK - NO FAKE, NO ROBOTIC ===
+- All location displays must use human address: "Allen Avenue, Ikeja" NOT "4.88470, 6.9746".
+- All safe exit / deroute instructions must use real street names and real place names, short sentences, no big grammar, no "Cyan Protocol".
+- All gun detection must show confidence % and ask for human confirmation. Never say 100% or exact pinpoint.
+- All reports must go through Guard AI verification before Alert.
+- All Naira must be ₦.
+- All tabs must have small AdMob at bottom.
+- Remove all fake demo users, fake 0 members, fake telemetry text.
+
+Build this now. Live Firebase only. No fake data.
+
+4
+REBUILD ROAD + VEHICLE + BUILDING SCANNERS - REAL PHYSICS ONLY, NO FAKE, MUST SAVE LIFE
+
+Use ₦ for Naira: ₦5,000. Never # or [].
+
+=== GLOBAL UI FOR ALL 3 SCANNERS ===
+- GPS map must be TALL, full screen to bottom. Leave only little space at bottom for buttons + 50px Google Ads space at very bottom. Ads must never cover GPS or buttons.
+- User marker: If walking -> show user's profile picture in circle. If no profile picture, show blue circle with initial. If in vehicle -> same picture inside a car icon. If in building -> same picture inside a small house icon. Marker must move on GPS as user moves, with smooth animation, and show "Moving" + speed + street name: "You are moving on Allen Avenue, Ikeja".
+- When user taps Scan, button immediately changes to Stop Scan. Tapping Stop Scan stops mic, camera, radar, and saves battery.
+- Radar: Simple, clear, transparent 25% fill, thin border, revolving sweep, must NOT cover street names or location names. Radar is visual only.
+
+=== REAL PHYSICS 1: HOW GUARD AI KNOWS WALKING / VEHICLE / BUILDING ===
+Use this exact calculation, run every 3 seconds:
+1. Speed from GPS using Haversine:
+   d = 2 * 6371000 * asin( sqrt( sin²((lat2-lat1)/2) + cos(lat1)*cos(lat2)*sin²((lng2-lng1)/2) ) )
+   v = d / (time2 - time1)  // in m/s, smooth over last 5 seconds
+2. Movement variance from accelerometer:
+   a = sqrt(ax² + ay² + az²) - 9.81
+   var = variance(a) over 3 seconds
+3. Decision:
+   - If v < 1.5 m/s AND var > 0.30 -> WALKING -> Show profile picture circle
+   - If v > 6.0 m/s AND var < 0.15 AND GPS heading stable -> IN VEHICLE -> Show picture in car icon
+   - If v < 0.5 m/s for > 5 mins AND WiFi SSID same for >5 mins AND GPS accuracy > 25m (signal blocked by roof) -> IN BUILDING -> Show picture in house icon + building name from Google Places API if available
+   - If unsure, default to WALKING. Never guess.
+
+=== ROAD SCANNER - GUNSHOT 200m ===
+Buttons: [Scan] [Deroute] [Report & Earn ₦5,000] + Ads space.
+When Scan is ON:
+- Radar radius = 200m around user, revolving.
+- Listen with phone mic + on-device ML audio classifier (YAMNet / TensorFlow Lite).
+REAL PHYSICS 2: GUNSHOT SOUND DETECTION - Use this:
+   - Peak Sound Pressure: SPL = 20*log10(P / P0), P0 = 20 microPa
+   - A gunshot has: Rise Time < 5ms, Peak > 90dB at phone, Decay < 200ms, Energy in 1000-4000 Hz band.
+   - Distance estimate by Inverse Square Law (REAL physics): SPL2 = SPL1 - 20*log10(d2/d1). If we assume gunshot at source is ~160dB at 1m, and phone hears 100dB, then estimated distance d = 10^((160-100)/20) = ~1000m, but with buildings, use correction: d_est = d * 0.4 for urban block. Show as ESTIMATE, not exact.
+   - Direction estimate: Use phone heading + stereo mic time difference: If left mic hears 0.2ms before right, sound is from left. This gives a DIRECTION SECTOR (e.g. North-East), not an exact pinpoint. 1 phone CANNOT pinpoint exact location. Show this honestly.
+- If confidence > 75%: 
+   - GPS map tint turns RED
+   - Banner on top of GPS: "Possible Gunshots Ahead - [Street Name, e.g. Opebi Road] - 78% confidence"
+   - Place a SMALL RED ANIMATED FLAG in the estimated direction sector, at estimated distance, with label: "Possible gunshot area - ~150m NE - Not exact, verify". Flag pulses, does NOT claim exact house.
+   - Ask user: "Did you hear it? [Yes, Confirm] [No, False Alarm]" - User confirmation raises verification score.
+- If confidence < 75%: Do NOT show flag, do NOT turn GPS red. Show "Listening... No gunshot detected".
+- Battery: Auto-stop scan after 5 mins if no detection.
+
+Deroute - REAL PHYSICS 3: SAFE ROUTE:
+When user taps Deroute:
+- Define Danger Zone = Circle radius 500m around estimated gunshot area.
+- Use Google Directions API, request 2 alternative routes that AVOID danger zone.
+- Choose route where: Minimum distance from danger zone > 500m AND Uses main roads only.
+- Display immediately on GPS as DOTTED BLINKING BLUE LINE with street names: "Safe Route via Allen Avenue -> Opebi Road - 1.2km - 8 mins".
+- If no safe route: Show "Stay where you are. Do not move. Call for help."
+
+=== VEHICLE SCANNER - SAFE VEHICLE + GUN SCAN ===
+Buttons: [Scan] [Next Vehicle] [Report & Earn ₦5,000] + Ads space.
+When Scan is ON:
+- Radar radius = 3m around user, transparent, revolving.
+- REAL PHYSICS 4: SAFE VEHICLE SCORE:
+   SafeScore = (0.5 * VerifiedDriver) + (0.3 * PositiveReports) + (0.2 * PlateMatch)
+   - VerifiedDriver = 1 if driver has Guard AI verified ID + face match, else 0
+   - PositiveReports = 1 if 2+ users reported this vehicle as safe in last 30 days, else 0
+   - PlateMatch = 1 if plate visible and matches registered vehicle, else 0
+   - If SafeScore >= 0.7 -> Show GREEN badge "Guard AI Safe - Verified Driver"
+   - If SafeScore < 0.7 -> Show YELLOW badge "Unknown - Scan with caution"
+   - Never invent safe status. If no data, say Unknown.
+- Show dotted blinking line to up to 3 vehicles in camera view. If 1 visible, show 1. If 2, show 2. Max 3. Use Camera + ML Kit Object Detection to detect vehicles in view.
+- Vehicle Gun Scan - 20 SECOND TIMER:
+   - User points camera at vehicle for 20 seconds. Countdown shown: "Scanning... 18s left".
+   - VISIBLE GUN: Use on-device image classification to look for visible gun shape. If confidence > 80%, banner above GPS: "Visible Gun Found - Do NOT Enter - Report Now".
+   - HIDDEN GUN: TRUTH - Phone CANNOT detect hidden gun through metal by resonance. Do NOT fake it. Instead do: Audio check for gunshot-like sounds + Driver verification check. If no visible gun, show: "No visible gun found. Phone cannot see hidden items inside vehicle - Use caution, check driver verification." This saves life because it does not give false confidence.
+   - After 20s, show result and auto-stop to save battery. Button goes back to Scan.
+- Next Vehicle: When tapped, clear current vehicles, scan next 3 vehicles within 3m / next in camera view. If no more vehicles, show "No more vehicles in view".
+
+=== BUILDING SCANNER - VISIBLE + AUDIO CHECK ===
+Buttons: [Scan] [Resonance] [Report & Earn ₦5,000] + Ads space.
+When Scan is ON:
+- Radar radius = 100m around user, transparent, revolving.
+- Scan = 20 second camera scan for visible threats: visible gun, fire, smoke, large crowd. Use ML Kit. If visible gun found with confidence > 80%, banner above GPS: "Visible Gun Found in Building - Do Not Enter".
+- Resonance Button - HONEST FUNCTION: Rename in code to Audio Resonance Check, but keep button label "Resonance" for user. When tapped, listen for 20 seconds for gunshot-like impulses inside building using same audio formula as Road Scanner: Peak > 90dB, Rise < 5ms, Decay < 200ms. If detected with confidence > 75%, banner above GPS: "Possible Hidden Gun Audio Found - 76% confidence - Do Not Enter". If not detected, show: "No gunshot audio detected. Phone cannot see through walls. Use caution."
+- Never claim "Hidden Gun Found 100%" - always show confidence and "Possible".
+- After 20s, auto-stop to save battery.
+
+=== FINAL RULES ===
+- Never show raw coordinates like 4.88535, 6.97813 to users. Always show human address: "Allen Avenue, Ikeja, Lagos".
+- Never say "Exact pinpoint" with 1 phone. Say "Estimated area".
+- Never say "Hidden gun resonance detected 100%" - phones cannot do that.
+- All gun alerts must ask user to Confirm / False Alarm, to stop panic.
+- All 3 scanners must have GPS tall to bottom + buttons + Ads space.
+- All logic must use live Firebase + live phone sensors. No demo, no fake flags.
+
+Build this now.
+
+
+5
+BUILD AUTO-FORWARD TO POLICE AFTER ADMIN APPROVAL - ADMIN ONLY
+
+Use simple words. No big grammar. Use ₦ for Naira.
+
+=== GOAL ===
+When a user reports an incident, Guard AI must:
+1. Know the state where the incident happened
+2. Verify the report
+3. Wait for Admin to approve
+4. After Admin approves, AUTOMATICALLY forward the report to the verified police number of THAT state immediately.
+User must NOT see police numbers. Only Admin can see them.
+
+=== POLICE NUMBERS DATABASE - ADMIN ONLY, NEVER SHOW TO USERS ===
+
+Create collection in Firebase: police_stations
+Fields: state, area, stationName, phone1, phone2, isVerified, isActive
+
+Add these 37 states, 2 numbers each, isVerified = false at first, isActive = true. Admin will verify by calling each one:
+
+Abia: 08035415408, 08079210003
+Adamawa: 08089671313, 08065604764
+Akwa Ibom: 08039213071, 08020913810
+Anambra: 07039194332, 08024922772
+Bauchi: 08151849417, 08127162434
+Bayelsa: 07034578208, 07032702984
+Benue: 08066006475, 08053039936
+Borno: 08068075581, 08036071667
+Cross River: 08133568456, 07053355415
+Delta: 08036684974, 08037058988
+Ebonyi: 07064515001, 08125273721
+Edo: 08037646272, 08077773721
+Ekiti: 08062335577, 07089310359
+Enugu: 08032003702, 08075390883
+FCT Abuja: 07057337653, 08061581938
+Gombe: 08150567771, 08151855014
+Imo: 08034773600, 08037037283
+Jigawa: 08075391069, 07089846285
+Kaduna: 08123822284, 08166405566
+Kano: 08032419754, 08123821575
+Katsina: 08075391255, 08075391250
+Kebbi: 08038797644, 08075391307
+Kogi: 07038329084, 08152195982
+Kwara: 07032069501, 08125275046
+Lagos: 08063299264, 08065154338
+Nasarawa: 08123821571, 07075391560
+Niger: 08081777498, 08127185198
+Ogun: 08032136765, 08081770416
+Ondo: 07034313903, 08075391808
+Osun: 08075872433, 08039537995
+Oyo: 08081768614, 08150777888
+Plateau: 08126375938, 08075391844
+Rivers: 08032003514, 08073777717
+Sokoto: 07068848035, 08075391943
+Taraba: 08140089863, 08073260267
+Yobe: 07039301585, 08035067570
+Zamfara: 08106580123, 07046444093
+
+RULE: This collection is ADMIN ONLY. Users cannot read it. Use Firebase Rules: allow read only if user is admin. Never show phone numbers on user screens.
+
+=== HOW GUARD AI KNOWS USER STATE AND INCIDENT STATE ===
+
+When user reports, save BOTH:
+1. userState: From Me Tab - user profile state, e.g. "Lagos"
+2. incidentState: From GPS at time of report. Use reverse geocoding to get state from latitude/longitude.
+   Example: GPS = Allen Avenue, Ikeja -> incidentState = "Lagos", incidentArea = "Ikeja", incidentAddress = "Allen Avenue, Ikeja, Lagos"
+   Do NOT show raw coordinates like 4.88535 to users. Show human address only.
+
+Forward to incidentState, NOT userState. Example: User lives in Lagos but reports incident in Rivers -> Forward to Rivers police, not Lagos police.
+
+If GPS fails, use incidentState = userState, and show warning: "GPS weak, using your home state".
+
+=== REPORT FLOW - 4 STEPS ===
+
+Create collection: incident_reports
+Fields: reportId, userName, userPhone, userState, incidentState, incidentArea, incidentAddress, incidentType (Gunshot / Robbery / Kidnapping / Accident / Other), description, photoUrl, gpsLat, gpsLng, createdAt, status, guardAiScore, adminDecision, forwardedTo, forwardedAt
+
+STEP 1 - USER REPORTS:
+User taps [Report & Earn ₦5,000] -> Form: What happened? Where? Photo (optional) -> Tap [Send Report]
+Status becomes: "Waiting for Check"
+Show user: "Report Sent. Guard AI is checking."
+
+STEP 2 - GUARD AI VERIFIES (Auto, in 30 seconds):
+Calculate Guard AI Score:
+- If photo exists + description > 10 words + GPS is real + user has verified phone = Score 70-100 = "Likely True"
+- If no photo + short description + no GPS = Score 0-40 = "Need More Info"
+- If 2+ users report same area + same time = Add +20, becomes "Verified by Users"
+Save guardAiScore and reason. Show to Admin only: "Guard AI Score: 85% - Likely True - Reason: Photo + GPS + Verified User"
+Never auto-forward without Admin. Guard AI only checks, does NOT send.
+
+STEP 3 - ADMIN APPROVES (Admin Only):
+In Admin Tab, new page: "Reports to Approve"
+Show list: New reports first. Each card shows:
+- Incident Type, Incident State, Incident Area, Incident Address
+- User Name, Time, Guard AI Score
+- Photo if any
+- Buttons: [Approve & Send to Police] [Reject] [Ask for More Info]
+
+If Admin taps [Approve & Send to Police]:
+- Status becomes: "Approved - Sent to Police"
+- Save adminDecision = "Approved", adminName, approvedAt
+
+If Admin taps [Reject]:
+- Status becomes: "Rejected"
+- User sees: "Report was not approved. Thank you."
+
+STEP 4 - AUTO FORWARD IMMEDIATELY AFTER APPROVAL:
+The moment Admin taps Approve, Guard AI must do this in 5 seconds, no extra tap:
+
+1. Find police station where: state == incidentState AND isVerified == true AND isActive == true. Pick phone1 first. If phone1 fails, use phone2.
+2. Build the message - SIMPLE, CLEAR:
+"GUARD AI ALERT - [Incident Type] in [Incident Area], [Incident State]
+Location: [Incident Address]
+Time: [Date + Time]
+Reported by: [User Name], Phone: [User Phone]
+Details: [Description]
+Photo: [Photo Link if any]
+Please respond. This report was verified by Guard AI and approved by Admin."
+
+3. Send it 3 ways:
+   a) SMS: Open SMS intent to police number with the message ready, Admin taps Send. If Twilio is connected, send SMS automatically without opening.
+   b) WhatsApp: Open WhatsApp to police number with same message ready.
+   c) Call: Show button [Call Police Now] that dials phone1.
+4. Save in report: forwardedTo = police phone number, forwardedAt = now, forwardedState = incidentState
+5. Show Admin GREEN banner: "Sent to [Station Name] - [Phone Number] - [Incident State] - Just Now"
+6. Show User: "Your report was sent to [Incident State] Police. Thank you. Your ₦5,000 is being processed."
+7. Also save copy to sansa_memory collection for Sansa to remember: "Report [ID] from [State] forwarded to police on [Date]".
+
+If NO verified police number for that state:
+- Do NOT fail silently. Show Admin RED banner: "No verified police for [Incident State]. Add number first."
+- Do NOT send to wrong state. Wait for Admin to add number.
+
+=== ADMIN ONLY SCREENS ===
+- Admin -> Police Stations: Admin can Add, Edit, Delete, Call to Verify. When Admin calls and police pick, tap [Mark as Verified] -> turns GREEN. If number does not work, tap [Mark as Not Working] -> turns RED and hidden.
+- Admin -> Reports to Approve: Only Admin can see this.
+- User screens: User sees only "Report Sent" / "Report Sent to Police" - never sees police numbers.
+
+=== RULES ===
+- Live Firebase only. No demo. No fake forwarding.
+- Never forward without Admin approval.
+- Never forward to wrong state. Always use incidentState.
+- Never show police numbers to users.
+- Always show human address, not coordinates.
+- Build this now.
+
+6
+DO NOT REBUILD FROM ZERO.
+KEEP my Firebase, my users, my reports, my police numbers, my Guard AI Protocol.
+This is UPGRADE ONLY. Add these new features ON TOP of my live app.
+If anything will delete data, STOP and ask me first.
+
+BUILD THESE 5 FEATURES - LIVE, NO DEMO, NO FAKE
+
+Use simple words. Use ₦ for Naira. Never show police numbers to users.
+
+=== 1. VERIFIED PAID VIDEO GOES TO HOME PAGE ===
+
+Rule: When a video report passes ALL 3 steps, it moves to Home Page automatically.
+Step 1: Guard AI Physics Check = PASS
+Step 2: Human Verifier = REAL
+Step 3: Admin approves payment of ₦5,000 AND payment is DONE in Firebase (paymentStatus == "paid")
+
+Only then:
+- Create collection: home_videos
+- Copy video to home_videos with fields: videoUrl, userName, userProfilePic, incidentType, incidentState, incidentArea, incidentAddress, verifiedAt, views, likes
+- Show it on Home Page in a section called: "Verified By Guard AI - Real Videos"
+- Show newest first.
+- Show GREEN tick + text: "Verified + Paid ₦5,000"
+- User can see video, like, share. User can NEVER see unverified or unpaid video on Home.
+- If paymentStatus is NOT "paid", do NOT show on Home. Keep it hidden in Reports.
+
+=== 2. NIGHT WATCH SCANNER - 4TH BUTTON IN WEAPON TAB ===
+
+Weapon Tab already has 3 buttons. Add 4th button: [Night Watch Scanner]
+
+How it works - HONEST PHYSICS, NO MAGIC:
+User taps [Scan] at night -> Guard AI becomes ACTIVE for the whole night until user taps [Stop Scan].
+
+Guard AI uses REAL phone sensors only:
+- Camera: User must point phone camera outward / keep phone face up with camera open. Guard AI uses on-device object detection to look for shape of a gun.
+- Microphone: Listen for loud bang pattern.
+- GPS + Compass: To know where threat is.
+
+PHYSICS FORMULA FOR NIGHT WATCH - USE THIS IN CODE:
+
+1. Distance by Sound:
+   distance = speed_of_sound x time_delay
+   speed_of_sound = 343 m/s in air at 20°C
+   If mic hears bang, distance = 343 x time since flash seen.
+   If distance <= 100m, it is INSIDE danger zone.
+
+2. Distance by GPS:
+   Use Haversine Formula to calculate distance between user and threat:
+   d = 2 x R x arcsin( sqrt( sin²((lat2-lat1)/2) + cos(lat1) x cos(lat2) x sin²((lon2-lon1)/2) ) )
+   Where R = 6,371,000 meters (Earth radius)
+   If d <= 100m, threat is inside 100m circle.
+
+3. Danger Zone:
+   Create a circle around user: radius = 100m
+   danger = true IF (camera sees gun shape with confidence > 70% AND distance <= 100m) OR (loud bang heard AND distance <= 100m)
+   If danger = true, do ALARM now.
+
+4. Alarm:
+   When danger = true:
+   - Play LOUD alarm, full volume, vibrate, flash screen RED.
+   - Alarm must NOT stop by itself. It stops ONLY when user taps [STOP ALARM] with hand.
+   - Show big button: [STOP ALARM - I AM AWAKE]
+   - At same time, show on GPS: Blinking dotted RED line from user dot to threat dot, with text: "Threat - 45m away - North East"
+   - Update distance every 1 second using Haversine formula above.
+   - Save to Firebase: night_watch_alerts, with time, distance, location.
+
+5. Buttons on Night Watch Screen:
+   Top: [Scan] [Threat] [Report & Earn ₦5,000]
+   - [Scan] = Start night watch
+   - [Threat] = Show current threats in 100m
+   - [Report & Earn ₦5,000] = Send report
+   Bottom: [STOP ALARM] appears only when alarm is ringing.
+
+6. IMPORTANT RULES - DO NOT LIE:
+   - Never say "I can see gun through wall" - Camera cannot see through wall.
+   - Never say "100% detection" - Show confidence: "Camera confidence: 75% - Might be gun"
+   - If camera is covered or phone is in pocket, show warning: "Camera blocked. Put phone face up to scan."
+   - If no gun is seen, show: "Scanning... No gun seen in 100m. Still watching."
+   - Battery: Show "Night Watch uses battery. Keep phone charging."
+   - This is LIVE detection from user's own phone, not from satellite.
+
+=== 3. GPS MAP MUST BE LONG ENOUGH FOR BUTTONS ===
+
+- On all GPS screens, make the map TALL. Map must take 70% of screen height.
+- Buttons must sit ON TOP of map, not under map, not hidden.
+- Night Watch GPS: Buttons [Scan] [Threat] [Report & Earn ₦5,000] must be visible at top of map, always.
+- Do NOT cut map short. User must see map + buttons together without scrolling.
+
+=== 4. FAMILY TRACKING GPS MUST CONTAIN 10 PERSONS ===
+
+- Family Tracking screen: One big map that shows ALL 10 family members at once.
+- When user adds family member, show their profile picture pin on map. Show user in the map.
+- Auto-zoom the map to fit all 10 pins. Use fitBounds to include all 10.
+- List below map: 10 names, each with GREEN dot if online, GREY if offline, and distance: "Mama - 200m away"
+- If more than 10, show first 10 on map, rest in list.
+- No fake location. Use real GPS from each family member's phone only.
+
+=== 5. PROFILE PICTURE ON EVERY GPS MAP - NO LETTER, NO "R" ===
+
+- When user uploads profile picture in Me Tab, save it to Firebase: users/{userId}/profilePicUrl
+- On EVERY GPS map: Home Map, Night Watch Map, Family Tracking Map, Incident Map - show user's REAL profile picture as the pin, round circle with GREEN border.
+- NEVER show letter "R" or first letter for a user who has uploaded picture.
+- ONLY if user has NOT uploaded picture yet, show: Grey circle with "?" or first letter.
+- If user changes picture in Me Tab, change it everywhere on all maps within 5 seconds.
+
+=== 6. LEADERBOARD ON HOME PAGE - TOP 5 ONLY - REAL ONLY ===
+
+On Home Page, add 2 boxes, visible to all users:
+
+BOX 1: "Top 5 Users - Most Trusted"
+- Sort users by trust_score in Firebase, highest first, take top 5.
+- Show: Rank 1-5, Profile Picture, Name, Trust Score, Badge (Gold for #1, Silver #2, Bronze #3)
+- If less than 5 users, show only real users. Never invent fake users.
+
+BOX 2: "Top 5 Reporters - Most Verified Reports"
+- Sort users by count of verified reports where status == "verified" AND paymentStatus == "paid", highest first, take top 5.
+- Show: Rank 1-5, Profile Picture, Name, Number of Verified Reports, Total Earned ₦
+- Example: "1. Chidi - 12 Reports - ₦60,000 earned"
+- Update every time a new report is verified and paid. Live from Firebase only.
+
+RULES:
+- Live Firebase only. No demo. No fake leaderboard. No fake video.
+- Never show fake users to make leaderboard look full.
+- Never show unverified video on Home.
+- Build this now.
+
+
+7
+
+GENERAL RULES FOR ALL 5 FEATURES:*
+> Each feature must have a MAP on the screen.
+> On each map, at the the middle of the right side, put a small green button that says: "Refresh Map". 
+> When user clicks Refresh Map, use http://navigator.geolocation.getCurrentPosition to get the user's exact current latitude and longitude, move the map center to that exact point, set zoom to 17, move the user marker to that exact point, and show a message "Map refreshed! This is your exact location now."
+> If GPS is off, show "Please turn on your GPS / Location"
+>
+> *FOR ROAD SCANNER, VEHICLE SCANNER, BUILDING SCANNER, NIGHT WATCH SCANNER ONLY:*
+> These 4 must have a RADAR.
+> When user clicks SCAN button, immediately show a round radar in the center of the screen. The radar must be green, with circles inside, a center red dot, and a rotating sweep line that spins 360 degrees continuously with animation. Show text inside radar: "SCANNING..."
+> When user clicks STOP SCAN button, the radar must stop spinning immediately and disappear from the screen. The button must change back from STOP SCAN to SCAN.
+
+> Family Tracking must NOT have radar. It is only map tracking.
+
+> *SCAN + REPORT BUTTONS:*
+> In Road Scanner, Vehicle Scanner, Building Scanner, and Night Watch Scanner, put two buttons side by side at the bottom, close to each other:
+> Button 1: Blue button, says "SCAN" - when clicked it starts radar, when clicked again it says "STOP SCAN" and stops radar.
+> Button 2: Orange button, says "Report & Earn ₦5000" - when clicked it opens a Report Form page where user can report what they saw, upload photo, add location, and submit to earn ₦5000.
+>
+> *DESIGN:*
+> Use modern mobile-first design, clean, fast, works on Android phone in Port Harcourt, Nigeria.
+> Use green, blue, orange colors. Big buttons that are easy to press.
+> Make all maps work with Google Maps or Leaflet.
+> Make the app work even with low data.
+>
+Build the full HTML, CSS, and JavaScript in one file, ready to run.
+
+#####
+
+
+> Do NOT ask me to upload http://yamnet.tflite file. AI Studio does not support .tflite upload. Do NOT try to load a local file.
+>
+> Instead, load YAMNet brain directly from internet using http://TensorFlow.js from this URL: https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1
+>
+> When user press SCAN, ask for microphone permission, listen from mic, and every 1 second classify sound with YAMNet.
+>
+> If Gunshot: Show RED ALERT, play alarm, vibrate, and save to my Firebase Firestore collection "alerts" with type=gunshot, time=now, location, confidence.
+>
+> If Tyre Burst, Door Slam, Generator, Talking: Show GREEN SAFE, do not save to Firebase.
+>
+> Do not require Camera. Work with microphone + GPS only.
+
+ADD SIMPLE MANUAL OPAY PAYMENT TO GUARD AI - NO PAYSTACK, NO API
+
+Payment Method: Manual OPay Transfer + Admin Approval. No automatic collection.
+
+When user taps Pay ₦5,000 Monthly or Pay ₦35,000 Yearly:
+Show payment screen with:
+- Bank: OPay Digital Services
+- Account Name: [ADMIN NAME - Let Admin edit this in Admin Dashboard]
+- Account Number: [ADMIN OPAY NUMBER - Let Admin edit this in Admin Dashboard]
+- Amount: ₦5,000 or ₦35,000
+- Button: [COPY ACCOUNT NUMBER]
+- Button: [I HAVE PAID - UPLOAD RECEIPT]
+
+After user uploads receipt:
+- Save to Firestore: payments collection (userId, amount, purpose, receiptImage, status = PENDING)
+- Forward to Admin Dashboard LIVE with notification: "New Payment - ₦5,000 - Needs Approval"
+- Admin sees receipt image, checks OPay app, taps [APPROVE & ACTIVATE] or [REJECT]
+- On APPROVE: Update users/{uid}/subscription = active, update payment status = APPROVED, send user notification "Payment Approved - Welcome to Guard AI Premium"
+- On REJECT: status = REJECTED, tell user "Receipt not confirmed, please check and resend"
+
+####
+Admin Dashboard must have setting to change OPay Name and OPay Number anytime without rebuilding app.
+Build this now..
+
+ Remove the Scan 
+Results section completely from the vehicle scanner Guard 
+AI..
+ Delete the whole list that shows:
+"Danfo (CLEARED) • Eletu Odibo Street • 
+Default Terminal"
+"Danfo (CLEARED) • 
+Danfo Corridor • Default Terminal"
+
+ Delete all 3 green . boxes. Delete that entire 
+section.Do NOT delete SCAN 
+button, NEXT button, SOS, or bottom 
+navigation. Only delete the Scan Results list.
+
+ After deleting, leave clean empty space 
+there. Do not put any replacement text, no 
+"No results", no placeholder box.
+Keep everything else exactly as it is.
+
+####
+
+Fix Guard AI Permissions to be REAL, NOT FAKE, and connected to Firebase.
+
+Right now when I refresh the map it just says "Please enable GPS and location" but it never actually asks for permission. Fix this immediately.
+
+Create a REAL Permission Gate that shows FIRST after Sign Up or Sign In, EVERY TIME user opens Guard AI:*
+
+1. Permission Flow - Must Happen Before Home/Map:*
+After user successfully Signs Up OR Signs In:
+Do NOT go straight to Home.
+Show a full-screen Permission Screen with 3 steps:
+
+Step 1: Location / GPS
+Title: "Enable Location"
+Text: "Guard AI needs your live location to warn you about danger near you and to show you on the map."
+ Button: "Enable Location"
+On tap: Call REAL `navigator.geolocation.getCurrentPosition()` with `enableHighAccuracy: true`. Do NOT fake it. If user allows, get real latitude, longitude, accuracy.
+If user denies, show: "Location denied. Guard AI cannot work without location." + Button "Try Again". Do NOT let them skip to Map without location.
+
+Step 2: Microphone
+Title: "Enable Microphone"
+Text: "Guard AI listens for gunshot, danger sounds. Microphone is only used during Scan."
+Button: "Enable Microphone"
+On tap: Call REAL `navigator.mediaDevices.getUserMedia({ audio: true })`. Do NOT fake it. If allowed, show "Microphone Connected - Listening..." with real mic level. If denied, show "Microphone denied" + "Try Again".
+
+Step 3: Done
+Title: "You Are Protected"
+ Text: Shows real data: "GPS: ON • Lat: [real lat] • Lng: [real lng] • Mic: ON"
+Button: "Enter Guard AI" -> Go to Home / Map
+
+2. Connect to Firebase - REAL, NOT FAKE:*
+In Firestore, in collection `guard_users_live`, create/update document with user UID:
+> ```
+> userId: [real UID]
+> lat: [real GPS lat]
+> lng: [real GPS lng]
+> accuracy: [real accuracy]
+> locationEnabled: true
+> micEnabled: true
+> lastUpdated: serverTimestamp()
+> isOnline: true
+> ```
+Also save in `user_permissions` collection: userId, locationGranted, micGranted, timestamp.
+When user signs out, set `isOnline: false`.
+When user opens app again, read from Firebase and check if permissions still granted.
+
+3. Map Must Use REAL GPS:*
+Map must NOT show "Please enable GPS" if permission is granted.
+Map must center on REAL user location from `navigator.geolocation.watchPosition()`.
+Show a blue dot at REAL location.
+Every 10 seconds, update `guard_users_live` in Firebase with new real location.
+Add a "Refresh Location" button on Map. On tap, call real geolocation again, update Firebase, and re-center map. Do NOT show fake refresh animation without calling GPS.
+
+4. Every Time User Opens Guard AI:*
+On app start, check `navigator.permissions.query({name:'geolocation'})` and `navigator.permissions.query({name:'microphone'})`.
+If either is denied or prompt, show the Permission Screen again BEFORE Home.
+If both are granted, skip permission screen and go straight to Home, but still update Firebase location in background.
+Add a "Permissions" section in Settings showing REAL status: Location: GRANTED/DENIED, Microphone: GRANTED/DENIED, with buttons to re-request..
+
+5. Do NOT Fake Anything:*
+ Do NOT use hardcoded lat/lng like Lagos Center.
+ Do NOT use fake "GPS ON" text without calling real API.
+Do NOT use fake mic level. Use real `AudioContext` analyser for mic level.
+If user is on a device without GPS, show real error: "GPS not available on this device."
+
+ Keep all existing features. Only fix permissions and map to be real.
+Test: Sign out, Sign in again -> Permission Screen must appear. Allow -> Map must show my real blue dot, not "Please enable GPS".
+
+###
+
+
+
+> Update Top 10 Leaderboard to be REAL - Based on Total Scans + Usage + Reports. NO DEMO DATA.
+>
+> Right now Top 10 is only based on reports. Change it completely.
+>
+> *1. REAL DATA - NO DEMO, NO FAKE USERS:*
+> - Delete ALL demo / fake leaderboard users. Delete all hardcoded names, hardcoded points, hardcoded ranks.
+> - Leaderboard must ONLY show REAL users from Firebase Auth who actually used Guard AI.
+> - If only 3 real users exist, show only 3. Do NOT fill it with fake users to make it look like 10.
+> - If no user has used app this month, show: "No rankings yet this month. Be the first to scan and report."
+>
+> *2. HOW TOP 10 RANKING IS CALCULATED - REAL FORMULA:*
+> Create Firebase collection: `user_usage_stats` - updated in REAL TIME every time user does something:
+> ```
+> userId, name, avatar,
+> totalScans: [real count from Scan button],
+> totalReports: [real count],
+> verifiedReports: [real count],
+> totalUsageDays: [real days user opened app],
+> totalUsageMinutes: [real minutes in app],
+> totalPoints: [calculated],
+> month: "2026-11",
+> lastActive: serverTimestamp()
+> ```
+>
+> *Ranking Formula - Use THIS exactly:*
+> - 1 Verified Report = 100 points
+> - 1 Scan = 10 points
+> - 1 Day Active (opened app + did at least 1 scan) = 20 points
+> - 1 Hour of Usage = 15 points
+> - Total Points = (Verified Reports x 100) + (Total Scans x 10) + (Total Usage Days x 20) + (Total Usage Minutes / 60 x 15)
+>
+> Example REAL: User A scanned 50 times (500 pts) + 5 verified reports (500 pts) + active 10 days (200 pts) = 1,200 points. That is how they rank.
+>
+> *3. LEADERBOARD DESIGN - SHOW ALL REAL USAGE:*
+> Top 10 screen must show a TABLE, not just names:
+>
+> Top: "Top 10 - November 2026 • ₦10,000 Monthly Bonus • Ends in: [REAL countdown]"
+>
+> Columns for EACH user (must be visible):
+> Rank | Name | Total Scans | Usage | Verified Reports | Total Points | Prize
+> Example row:
+> #1 | Tunde A. | 128 Scans | 14 Days • 6h 20m | 8 Verified | 2,340 pts | ₦10,000
+> #2 | Ada O. | 95 Scans | 11 Days • 4h 10m | 6 Verified | 1,890 pts | ₦10,000
+>
+> - Add 3 filter tabs at top of Leaderboard: [By Points] [By Scans] [By Usage] - tapping re-sorts the REAL list.
+> - Highlight MY row in gold at bottom: "You - Rank #14 • 42 Scans • 3 Days • 2 Verified • 620 pts • 580 pts to Top 10"
+> - Add small progress bar: "You need 580 more points to enter Top 10"
+>
+> *4. TRACK USAGE IN REAL TIME - CONNECT TO FIREBASE:*
+> - Every time user clicks SCAN: Increment `totalScans` +1 in Firebase, recalculate `totalPoints`, update leaderboard instantly.
+> - Every time user opens app: Increment `totalUsageDays` (only once per day), update `lastActive`.
+> - Track `totalUsageMinutes` with real timer: When app is open, count minutes, save to Firebase every 5 minutes. Do NOT fake it.
+> - Every time a report is verified: Increment `verifiedReports` +1, recalculate points.
+> - Leaderboard must auto-refresh every 30 seconds from Firebase. No refresh button needed, but also add pull-to-refresh that pulls REAL Firebase data.
+>
+> *5. KEEP THE TWO MONEY SYSTEMS SEPARATE:*
+> - Report & Earn ₦5,000 = Still per verified report, goes to Report Wallet. Does NOT change.
+> - Top 10 ₦10,000 = Still monthly bonus, but now ranking is based on TOTAL SCANS + TOTAL USAGE + VERIFIED REPORTS, not just reports.
+> - Show this clearly on Top 10 page: "How to win: Scan everyday + Report verified danger + Use Guard AI daily = More Points = Top 10"
+>
+> *6. ADMIN VERIFICATION:*
+> - In Admin Panel, Admin can click any user on leaderboard and see REAL proof: List of all their scans with timestamps, list of all their reports, total minutes. No fake history.
+> - If Admin sees fake scans (e.g. 500 scans in 1 minute), Admin can click "Flag Cheating" and remove user from Top 10 for that month.
+>
+> Do NOT use any sample data. Do NOT use any placeholder names like "John Doe" or "User 1". If data is empty, show empty state.
+> Keep Report & Earn ₦5,000 system exactly as it is. Only upgrade Top 10 Leaderboard to include real scans and real usage.
+
+
+
+
+

@@ -1,0 +1,12 @@
+{
+  "name": "Guard AI",
+  "description": "Live Nigerian personal safety, threat detection, family GPS tracking, and verified incident reporting platform.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
