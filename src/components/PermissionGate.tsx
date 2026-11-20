@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { MapPin, Mic, ShieldCheck, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { db } from '../firebase';
+import { db, handleFirestoreError, OperationType } from '../firebase';
 import { reverseGeocodeHuman } from '../utils/geoPhysics';
 
 interface PermissionGateProps {
@@ -220,38 +220,42 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
       setMicGranted(true);
       setMicLoading(false);
 
-      // Save live permissions & live location to Firestore without blocking microphone UI progression
       if (gpsData) {
-        Promise.all([
-          setDoc(
-            doc(db, 'guard_users_live', uid),
-            {
-              userId: uid,
-              lat: gpsData.lat,
-              lng: gpsData.lng,
-              accuracy: gpsData.accuracy,
-              locationEnabled: true,
-              micEnabled: true,
-              lastUpdated: serverTimestamp(),
-              isOnline: true,
-            },
-            { merge: true }
-          ).catch((err) => {
-            console.warn('guard_users_live sync warning:', err);
-          }),
-          setDoc(
-            doc(db, 'user_permissions', uid),
-            {
-              userId: uid,
-              locationGranted: true,
-              micGranted: true,
-              timestamp: serverTimestamp(),
-            },
-            { merge: true }
-          ).catch((err) => {
-            console.warn('user_permissions sync warning:', err);
-          }),
-        ]);
+        const syncPerms = async () => {
+          try {
+            await setDoc(
+              doc(db, 'guard_users_live', uid),
+              {
+                userId: uid,
+                lat: gpsData.lat,
+                lng: gpsData.lng,
+                accuracy: gpsData.accuracy,
+                locationEnabled: true,
+                micEnabled: true,
+                lastUpdated: serverTimestamp(),
+                isOnline: true,
+              },
+              { merge: true }
+            );
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, `guard_users_live/${uid}`);
+          }
+          try {
+            await setDoc(
+              doc(db, 'user_permissions', uid),
+              {
+                userId: uid,
+                locationGranted: true,
+                micGranted: true,
+                timestamp: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, `user_permissions/${uid}`);
+          }
+        };
+        void syncPerms();
       }
 
       window.setTimeout(() => {
