@@ -107,7 +107,10 @@ export default function App() {
   // Fetch /api/maps-config so runtime key from server works in dev & production
   useEffect(() => {
     fetch('/api/maps-config')
-      .then((r) => r.json())
+      .then((r) => {
+        const ct = r.headers.get('content-type') || '';
+        return r.ok && ct.includes('application/json') ? r.json() : null;
+      })
       .then((d) => {
         if (d?.apiKey) setMapsApiKey(String(d.apiKey));
       })

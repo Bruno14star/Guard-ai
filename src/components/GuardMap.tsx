@@ -280,22 +280,29 @@ export const GuardMap: React.FC<GuardMapProps> = ({
       return;
     }
     setRefreshing(true);
+    const applyPos = (pos: GeolocationPosition) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      setManualCenter({ lat: latitude, lng: longitude });
+      setManualZoom(17);
+      onRefreshLocation?.(latitude, longitude, accuracy);
+      setRefreshToast('Map refreshed! This is your exact location now.');
+      setRefreshing(false);
+      window.setTimeout(() => setRefreshToast(null), 3500);
+    };
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        setManualCenter({ lat: latitude, lng: longitude });
-        setManualZoom(17);
-        onRefreshLocation?.(latitude, longitude, accuracy);
-        setRefreshToast('Map refreshed! This is your exact location now.');
-        setRefreshing(false);
-        window.setTimeout(() => setRefreshToast(null), 3500);
-      },
+      applyPos,
       () => {
-        setRefreshing(false);
-        setRefreshToast('Please turn on your GPS / Location');
-        window.setTimeout(() => setRefreshToast(null), 4000);
+        navigator.geolocation.getCurrentPosition(
+          applyPos,
+          () => {
+            setRefreshing(false);
+            setRefreshToast('Please turn on your GPS / Location');
+            window.setTimeout(() => setRefreshToast(null), 4000);
+          },
+          { enableHighAccuracy: false, timeout: 6000, maximumAge: 30000 }
+        );
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
     );
   }, [onRefreshLocation]);
 
