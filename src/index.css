@@ -39,3 +39,26 @@
 .animate-sos-flash {
   animation: sos-flash 0.7s ease-in-out infinite;
 }
+
+/* Hide Netlify badge / "Powered by Netlify" flyer so it does not cover bottom tabs */
+[data-netlify-badge],
+[data-netlify-deploy-badge],
+#netlify-identity-widget,
+.netlify-badge,
+.netlify-deploy-preview-badge,
+iframe[src*="netlify"],
+div[class*="netlify-badge"],
+div[id*="netlify-badge"],
+a[href*="netlify"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+div:has(> a[href*="netlify"]) {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

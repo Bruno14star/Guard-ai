@@ -250,6 +250,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
           userLng={location?.lng ?? null}
           userName={user.fullName}
           userPhotoURL={user.photoURL}
+          addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}
           fitPinsBounds={true}

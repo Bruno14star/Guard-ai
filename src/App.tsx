@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { APIProvider } from '@vis.gl/react-google-maps';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
   addDoc,
@@ -22,7 +21,6 @@ import {
   Building2,
   User as UserIcon,
   ShieldAlert,
-  X,
 } from 'lucide-react';
 import { ADMIN_EMAILS, auth, db, handleFirestoreError, OperationType } from './firebase';
 import {
@@ -67,12 +65,6 @@ export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(true);
   const [openSubSignal, setOpenSubSignal] = useState<number>(0);
 
-  // Maps API key + Case A Quota Banner
-  const [mapsApiKey, setMapsApiKey] = useState<string>(
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
-  );
-  const [quotaBannerVisible, setQuotaBannerVisible] = useState(false);
-
   // Real GPS + Motion Sensor Location
   const [location, setLocation] = useState<HumanLocation | null>(null);
   const lastGeocodedPosRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
@@ -103,23 +95,6 @@ export default function App() {
     if (darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
   }, [darkMode]);
-
-  // Fetch /api/maps-config so runtime key from server works in dev & production
-  useEffect(() => {
-    fetch('/api/maps-config')
-      .then((r) => {
-        const ct = r.headers.get('content-type') || '';
-        return r.ok && ct.includes('application/json') ? r.json() : null;
-      })
-      .then((d) => {
-        if (d?.apiKey) setMapsApiKey(String(d.apiKey));
-      })
-      .catch(() => {});
-
-    const onQuota = () => setQuotaBannerVisible(true);
-    window.addEventListener('gmp-quota-exceeded', onQuota);
-    return () => window.removeEventListener('gmp-quota-exceeded', onQuota);
-  }, []);
 
   // Auth listener
   useEffect(() => {
@@ -328,7 +303,14 @@ export default function App() {
   }, []);
 
   const updateHumanLocationFromCoords = useCallback(
-    async (lat: number, lng: number, accuracy: number, speedMps = 0, heading: number | null = null) => {
+    async (
+      lat: number,
+      lng: number,
+      accuracy: number,
+      speedMps = 0,
+      heading: number | null = null,
+      forceGeocode = false
+    ) => {
       if (speedMps > 0.5) stationarySinceRef.current = Date.now();
       const samples = accelSamplesRef.current;
       const mean = samples.length > 0 ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
@@ -350,8 +332,27 @@ export default function App() {
         headingStable,
       });
 
+      const coordLabel = `Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}`;
+
+      // Immediately update live GPS coordinates so map marker centers on REAL GPS right away
+      setLocation((prev) => ({
+        lat,
+        lng,
+        accuracy: Math.round(accuracy),
+        formattedAddress: prev?.formattedAddress || coordLabel,
+        streetName: prev?.streetName || coordLabel,
+        area: prev?.area || '',
+        city: prev?.city || '',
+        state: prev?.state || '',
+        landmark: prev?.landmark || '',
+        heading,
+        speedMps,
+        movementMode,
+      }));
+
       const lastGeo = lastGeocodedPosRef.current;
       const shouldGeocode =
+        forceGeocode ||
         !lastGeo ||
         Date.now() - lastGeo.time > 20000 ||
         haversineMeters(lastGeo.lat, lastGeo.lng, lat, lng) > 40;
@@ -359,7 +360,7 @@ export default function App() {
       if (shouldGeocode) {
         lastGeocodedPosRef.current = { lat, lng, time: Date.now() };
         const human = await reverseGeocodeHuman(lat, lng);
-        setLocation({
+        setLocation((prev) => ({
           lat,
           lng,
           accuracy: Math.round(accuracy),
@@ -369,32 +370,47 @@ export default function App() {
           city: human.city,
           state: human.state,
           landmark: human.landmark,
-          heading,
-          speedMps,
-          movementMode,
-        });
-      } else {
-        setLocation((prev) =>
-          prev
-            ? {
-                ...prev,
-                lat,
-                lng,
-                accuracy: Math.round(accuracy),
-                heading,
-                speedMps,
-                movementMode,
-              }
-            : null
-        );
+          heading: prev?.heading ?? heading,
+          speedMps: prev?.speedMps ?? speedMps,
+          movementMode: prev?.movementMode ?? movementMode,
+        }));
       }
     },
     []
   );
 
-  // Real watchPosition once permissionsReady
+  // Real GPS getCurrentPosition (enableHighAccuracy: true) + watchPosition once permissionsReady
   useEffect(() => {
     if (!permissionsReady || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        updateHumanLocationFromCoords(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy,
+          pos.coords.speed || 0,
+          pos.coords.heading,
+          true
+        );
+      },
+      () => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            updateHumanLocationFromCoords(
+              pos.coords.latitude,
+              pos.coords.longitude,
+              pos.coords.accuracy,
+              pos.coords.speed || 0,
+              pos.coords.heading,
+              true
+            );
+          },
+          () => {},
+          { enableHighAccuracy: false, maximumAge: 30000, timeout: 8000 }
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         updateHumanLocationFromCoords(
@@ -530,35 +546,8 @@ export default function App() {
   ];
 
   return (
-    <APIProvider apiKey={mapsApiKey} language="en" region="NG">
-      <div className="min-h-screen h-screen flex flex-col bg-[#050B14] text-slate-100">
-        {/* Case A Demo Quota Banner */}
-        {quotaBannerVisible && (
-          <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm flex items-center justify-between gap-2 sticky top-0 z-50 shadow-sm shrink-0">
-            <span className="flex-1 text-center">
-              Google Maps Platform quota reached. If you are the app owner, visit{' '}
-              <a
-                href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline font-semibold text-amber-950 hover:text-amber-800"
-              >
-                maps developer site
-              </a>{' '}
-              for instructions to update your account.
-            </span>
-            <button
-              type="button"
-              onClick={() => setQuotaBannerVisible(false)}
-              className="p-1 cursor-pointer shrink-0"
-              aria-label="Dismiss quota notice"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Main Active Tab Content */}
+    <div className="min-h-screen h-screen flex flex-col bg-[#050B14] text-slate-100">
+      {/* Main Active Tab Content */}
         <main className="flex-1 overflow-y-auto">
           {activeTab === 'home' && (
             <HomeTab
@@ -567,7 +556,9 @@ export default function App() {
               scansToday={scansToday}
               activePlan={activePlan}
               usageStatDocId={usageStatDocId}
-              onRefreshLocation={(lat, lng, acc) => updateHumanLocationFromCoords(lat, lng, acc)}
+              onRefreshLocation={(lat, lng, acc) =>
+                updateHumanLocationFromCoords(lat, lng, acc, 0, null, true)
+              }
               onNavigateScanner={(sub) => {
                 setScannerSubTab(sub);
                 setActiveTab('weapon');
@@ -582,7 +573,9 @@ export default function App() {
               user={userProfile}
               location={location}
               activePlan={activePlan}
-              onRefreshLocation={(lat, lng, acc) => updateHumanLocationFromCoords(lat, lng, acc)}
+              onRefreshLocation={(lat, lng, acc) =>
+                updateHumanLocationFromCoords(lat, lng, acc, 0, null, true)
+              }
               onOpenReportModal={() => setReportModalOpen(true)}
               onOpenSubscriptions={() => {
                 setOpenSubSignal((n) => n + 1);
@@ -601,7 +594,9 @@ export default function App() {
               activePlan={activePlan}
               usageStatDocId={usageStatDocId}
               currentStats={currentStats}
-              onRefreshLocation={(lat, lng, acc) => updateHumanLocationFromCoords(lat, lng, acc)}
+              onRefreshLocation={(lat, lng, acc) =>
+                updateHumanLocationFromCoords(lat, lng, acc, 0, null, true)
+              }
               onOpenReportModal={() => setReportModalOpen(true)}
               onOpenSubscriptions={() => {
                 setOpenSubSignal((n) => n + 1);
@@ -614,7 +609,9 @@ export default function App() {
             <AlertsTab
               user={userProfile}
               location={location}
-              onRefreshLocation={(lat, lng, acc) => updateHumanLocationFromCoords(lat, lng, acc)}
+              onRefreshLocation={(lat, lng, acc) =>
+                updateHumanLocationFromCoords(lat, lng, acc, 0, null, true)
+              }
               onOpenReportModal={() => setReportModalOpen(true)}
             />
           )}
@@ -623,7 +620,9 @@ export default function App() {
             <SafeBusinessTab
               user={userProfile}
               location={location}
-              onRefreshLocation={(lat, lng, acc) => updateHumanLocationFromCoords(lat, lng, acc)}
+              onRefreshLocation={(lat, lng, acc) =>
+                updateHumanLocationFromCoords(lat, lng, acc, 0, null, true)
+              }
               onOpenReportModal={() => setReportModalOpen(true)}
             />
           )}
@@ -692,7 +691,6 @@ export default function App() {
           currentUserName={userProfile.fullName}
           onClose={() => setProfileModalUid(null)}
         />
-      </div>
-    </APIProvider>
+    </div>
   );
 }

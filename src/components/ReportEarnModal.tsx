@@ -266,7 +266,7 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
           userPhone: user.phone || '',
           userState: user.userState || location.state || 'Lagos',
           incidentState: location.state || user.userState || 'Lagos',
-          incidentArea: location.area || location.city || 'Local Area',
+          incidentArea: location.area || location.city || '',
           incidentAddress: location.formattedAddress,
           incidentType,
           description: description.trim() || `${incidentType} reported at ${location.streetName}`,

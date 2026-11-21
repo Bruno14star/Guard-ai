@@ -100,15 +100,15 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
 
   const handleAddBusiness = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!bizName.trim()) return;
+    if (!bizName.trim() || !location) return;
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'safe_business'), {
         businessName: bizName.trim(),
         type: bizType,
-        address: bizAddress.trim() || location?.formattedAddress || 'Nigeria',
-        lat: location?.lat ?? 6.5244,
-        lng: location?.lng ?? 3.3792,
+        address: bizAddress.trim() || location.formattedAddress,
+        lat: location.lat,
+        lng: location.lng,
         rating: 5,
         safeScore: 95,
         verified: false,
@@ -172,6 +172,7 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
           userLng={location?.lng ?? null}
           userName={user.fullName}
           userPhotoURL={user.photoURL}
+          addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={pins}
           fitPinsBounds={pins.length > 0}

@@ -195,6 +195,7 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
             <GuardMap
               userLat={selectedAlert.lat ?? location?.lat ?? null}
               userLng={selectedAlert.lng ?? location?.lng ?? null}
+              addressLabel={selectedAlert.address || null}
               pins={
                 Number.isFinite(selectedAlert.lat) && Number.isFinite(selectedAlert.lng)
                   ? [

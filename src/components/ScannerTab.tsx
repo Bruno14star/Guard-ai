@@ -309,12 +309,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
       setLiveAudioFrame(frame);
 
       if (frame.isGunshot) {
+        if (!location) {
+          setStatusMsg('Gunshot audio detected — waiting for live GPS lock to plot direction.');
+          return;
+        }
         const dist = estimateGunshotDistanceMeters(frame.splDb);
-        const sector = headingToSector(location?.heading);
-        const baseLat = location?.lat ?? 6.5244;
-        const baseLng = location?.lng ?? 3.3792;
-        const headingDeg = location?.heading ?? 45;
-        const threatPos = offsetLatLng(baseLat, baseLng, dist, headingDeg);
+        const sector = headingToSector(location.heading);
+        const headingDeg = location.heading ?? 45;
+        const threatPos = offsetLatLng(location.lat, location.lng, dist, headingDeg);
 
         if (mode === 'road') {
           setRoadThreatFlag({
@@ -565,10 +567,17 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   };
 
   const handleDeroute = () => {
-    const baseLat = location?.lat ?? 6.5244;
-    const baseLng = location?.lng ?? 3.3792;
+    if (!location) {
+      setStatusMsg('Waiting for live GPS position before plotting safe deroute.');
+      return;
+    }
     // Route 1.1km away from threat direction
-    const safeOffset = offsetLatLng(baseLat, baseLng, 1100, ((location?.heading ?? 0) + 180) % 360);
+    const safeOffset = offsetLatLng(
+      location.lat,
+      location.lng,
+      1100,
+      ((location.heading ?? 0) + 180) % 360
+    );
     setDerouteDest(safeOffset);
   };
 
@@ -704,6 +713,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
           userLng={location?.lng ?? null}
           userName={user.fullName}
           userPhotoURL={user.photoURL}
+          addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}
           showRadar={isScanning}
@@ -736,9 +746,11 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const baseLat = location?.lat ?? 6.5244;
-                    const baseLng = location?.lng ?? 3.3792;
-                    const pos = offsetLatLng(baseLat, baseLng, 65, 90);
+                    if (!location) {
+                      setStatusMsg('Waiting for live GPS signal before arming threat line.');
+                      return;
+                    }
+                    const pos = offsetLatLng(location.lat, location.lng, 65, 90);
                     if (!alarmRef.current) alarmRef.current = new ContinuousAlarmController();
                     alarmRef.current.start();
                     setNightThreatAlarm({
@@ -951,7 +963,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
                     <div className="min-w-0">
                       <p className="font-bold text-white truncate">{log.status}</p>
                       <p className="text-[11px] text-slate-400 truncate">
-                        {log.address || 'Live Street'}
+                        {log.address || `Lat: ${Number(log.lat || 0).toFixed(5)}, Lng: ${Number(log.lng || 0).toFixed(5)}`}
                       </p>
                     </div>
                     <ShieldCheck className="w-4 h-4 text-[#00E67A] shrink-0" />

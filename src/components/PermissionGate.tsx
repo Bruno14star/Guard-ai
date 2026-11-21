@@ -96,23 +96,24 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
       cleanupGps();
 
       const { latitude, longitude, accuracy } = pos.coords;
+      const coordFallback = `Lat: ${latitude.toFixed(5)}, Lng: ${longitude.toFixed(5)}`;
       let geo = {
-        formattedAddress: 'Current Street (Live GPS Active)',
-        streetName: 'Current Street',
-        area: 'Local Area',
-        city: 'Detected City',
+        formattedAddress: coordFallback,
+        streetName: coordFallback,
+        area: '',
+        city: '',
         state: '',
-        landmark: 'Nearby Landmark',
+        landmark: '',
       };
       try {
         geo = await Promise.race([
           reverseGeocodeHuman(latitude, longitude),
           new Promise<typeof geo>((resolve) =>
-            window.setTimeout(() => resolve(geo), 3500)
+            window.setTimeout(() => resolve(geo), 4500)
           ),
         ]);
       } catch {
-        // Keep safe fallback if geocoder fails
+        // Keep Lat, Lng fallback if Nominatim fails
       } finally {
         setGpsData({
           lat: latitude,
@@ -238,7 +239,7 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
               { merge: true }
             );
           } catch (err) {
-            handleFirestoreError(err, OperationType.WRITE, `guard_users_live/${uid}`);
+            console.warn('Non-blocking guard_users_live sync:', err);
           }
           try {
             await setDoc(
@@ -252,7 +253,7 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
               { merge: true }
             );
           } catch (err) {
-            handleFirestoreError(err, OperationType.WRITE, `user_permissions/${uid}`);
+            console.warn('Non-blocking user_permissions sync:', err);
           }
         };
         void syncPerms();

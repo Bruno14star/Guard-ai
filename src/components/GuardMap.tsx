@@ -1,14 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  AdvancedMarker,
-  Map as GoogleMap,
-  useApiIsLoaded,
-  useMap,
-  useMapsLibrary,
-} from '@vis.gl/react-google-maps';
-import { Car, Home, RefreshCw, AlertTriangle, ShieldCheck } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshCw, MapPin, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { MovementMode } from '../types';
-import { UserAvatar } from './UserAvatar';
 
 export interface MapPinItem {
   id: string;
@@ -28,6 +20,7 @@ interface GuardMapProps {
   userLng: number | null;
   userName?: string | null;
   userPhotoURL?: string | null;
+  addressLabel?: string | null;
   movementMode?: MovementMode;
   pins?: MapPinItem[];
   fitPinsBounds?: boolean;
@@ -46,212 +39,14 @@ interface GuardMapProps {
   showUserMarker?: boolean;
 }
 
-const DEFAULT_FALLBACK_CENTER = { lat: 6.5244, lng: 3.3792 };
-
-const RouteAndBoundsController: React.FC<{
-  userLat: number | null;
-  userLng: number | null;
-  pins: MapPinItem[];
-  fitPinsBounds: boolean;
-  routeOrigin?: { lat: number; lng: number } | null;
-  routeDestination?: { lat: number; lng: number } | null;
-  redThreatLineTo?: { lat: number; lng: number } | null;
-  onRouteResult?: (summary: string | null) => void;
-}> = ({
-  userLat,
-  userLng,
-  pins,
-  fitPinsBounds,
-  routeOrigin,
-  routeDestination,
-  redThreatLineTo,
-  onRouteResult,
-}) => {
-  const map = useMap();
-  const routesLib = useMapsLibrary('routes');
-  const mapsLib = useMapsLibrary('maps');
-  const coreLib = useMapsLibrary('core');
-  const polylinesRef = useRef<any[]>([]);
-  const threatLineRef = useRef<any | null>(null);
-  const blinkTimerRef = useRef<number | null>(null);
-
-  // Fit bounds when tracking multiple family pins
-  useEffect(() => {
-    if (!map || !coreLib || !fitPinsBounds) return;
-    const validPins = pins.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
-    if (validPins.length === 0 && (userLat === null || userLng === null)) return;
-
-    const bounds = new coreLib.LatLngBounds();
-    if (userLat !== null && userLng !== null) {
-      bounds.extend({ lat: userLat, lng: userLng });
-    }
-    validPins.slice(0, 10).forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng }));
-    if (validPins.length > 0) {
-      map.fitBounds(bounds, 64);
-    }
-  }, [map, coreLib, pins, fitPinsBounds, userLat, userLng]);
-
-  // Compute real safe route using modern Routes API (Route.computeRoutes)
-  useEffect(() => {
-    polylinesRef.current.forEach((p) => p.setMap(null));
-    polylinesRef.current = [];
-    if (blinkTimerRef.current) {
-      clearInterval(blinkTimerRef.current);
-      blinkTimerRef.current = null;
-    }
-
-    if (!map || !routesLib || !routeOrigin || !routeDestination) {
-      return;
-    }
-
-    let cancelled = false;
-    const request: Record<string, unknown> = {
-      origin: { lat: routeOrigin.lat, lng: routeOrigin.lng },
-      destination: { lat: routeDestination.lat, lng: routeDestination.lng },
-      travelMode: 'DRIVING',
-      provideRouteAlternatives: true,
-      fields: ['path', 'distanceMeters', 'durationMillis', 'viewport', 'legs'],
-    };
-
-    (routesLib.Route as unknown as { computeRoutes: (req: Record<string, unknown>) => Promise<{ routes: any[] }> })
-      .computeRoutes(request)
-      .then(({ routes }) => {
-        if (cancelled) return;
-        if (!routes || routes.length === 0) {
-          onRouteResult?.('Stay where you are. Do not move. Call for help.');
-          return;
-        }
-        const chosen = routes[routes.length > 1 ? 1 : 0];
-        const created: any[] = chosen.createPolylines();
-        let visible = true;
-        created.forEach((poly) => {
-          poly.setOptions({
-            strokeColor: '#2E9BFF',
-            strokeOpacity: 0,
-            strokeWeight: 5,
-            icons: [
-              {
-                icon: {
-                  path: 'M 0,-1 0,1',
-                  strokeOpacity: 1,
-                  scale: 4,
-                  strokeColor: '#2E9BFF',
-                },
-                offset: '0',
-                repeat: '16px',
-              },
-            ],
-          });
-          poly.setMap(map);
-        });
-        polylinesRef.current = created;
-
-        blinkTimerRef.current = window.setInterval(() => {
-          visible = !visible;
-          created.forEach((poly) => {
-            poly.setOptions({
-              icons: [
-                {
-                  icon: {
-                    path: 'M 0,-1 0,1',
-                    strokeOpacity: visible ? 1 : 0.25,
-                    scale: 4,
-                    strokeColor: '#00E5FF',
-                  },
-                  offset: '0',
-                  repeat: '16px',
-                },
-              ],
-            });
-          });
-        }, 550);
-
-        if (chosen.viewport) {
-          map.fitBounds(chosen.viewport, 50);
-        }
-
-        const km = ((chosen.distanceMeters ?? 0) / 1000).toFixed(1);
-        const mins = Math.max(1, Math.round((chosen.durationMillis ?? 0) / 60000));
-        const firstStep = chosen.legs?.[0]?.steps?.[0]?.instructions || 'Main Safe Road';
-        const cleanStep = String(firstStep).replace(/<[^>]+>/g, '');
-        onRouteResult?.(`Safe Route via ${cleanStep} • ${km}km • ${mins} mins`);
-      })
-      .catch((err: unknown) => {
-        console.error('Route computeRoutes error:', err);
-        const msg = err instanceof Error ? err.message : '';
-        if (msg.includes('OVER_QUERY_LIMIT') || msg.includes('429')) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-        onRouteResult?.('Unable to compute safe route right now. Stay cautious.');
-      });
-
-    return () => {
-      cancelled = true;
-      polylinesRef.current.forEach((p) => p.setMap(null));
-      polylinesRef.current = [];
-      if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
-    };
-  }, [map, routesLib, routeOrigin, routeDestination, onRouteResult]);
-
-  // Blinking dotted RED line for Night Watch active threat
-  useEffect(() => {
-    if (threatLineRef.current) {
-      threatLineRef.current.setMap(null);
-      threatLineRef.current = null;
-    }
-    if (!map || !mapsLib || !redThreatLineTo || userLat === null || userLng === null) return;
-    const poly = new mapsLib.Polyline({
-      path: [
-        { lat: userLat, lng: userLng },
-        { lat: redThreatLineTo.lat, lng: redThreatLineTo.lng },
-      ],
-      strokeOpacity: 0,
-      icons: [
-        {
-          icon: {
-            path: 'M 0,-1 0,1',
-            strokeOpacity: 1,
-            scale: 4,
-            strokeColor: '#FF2D55',
-          },
-          offset: '0',
-          repeat: '14px',
-        },
-      ],
-      map,
-    });
-    threatLineRef.current = poly;
-    return () => {
-      poly.setMap(null);
-    };
-  }, [map, mapsLib, redThreatLineTo, userLat, userLng]);
-
-  return null;
-};
-
-const ImperativeMapCenterer: React.FC<{
-  targetCenter: { lat: number; lng: number } | null;
-  targetZoom: number | null;
-}> = ({ targetCenter, targetZoom }) => {
-  const map = useMap();
-  useEffect(() => {
-    if (!map || !targetCenter) return;
-    map.panTo(targetCenter);
-    if (targetZoom !== null) {
-      map.setZoom(targetZoom);
-    }
-  }, [map, targetCenter, targetZoom]);
-  return null;
-};
-
 export const GuardMap: React.FC<GuardMapProps> = ({
   userLat,
   userLng,
   userName,
   userPhotoURL,
+  addressLabel,
   movementMode = 'Walking',
   pins = [],
-  fitPinsBounds = false,
   showRadar = false,
   radarRadiusLabel,
   dangerTint = false,
@@ -265,15 +60,121 @@ export const GuardMap: React.FC<GuardMapProps> = ({
   bottomOverlay,
   showUserMarker = true,
 }) => {
-  const isApiLoaded = useApiIsLoaded();
+  const [mapType, setMapType] = useState<'map' | 'satellite'>('map');
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [manualCenter, setManualCenter] = useState<{ lat: number; lng: number } | null>(null);
-  const [manualZoom, setManualZoom] = useState<number | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [imgError, setImgError] = useState(false);
+  const [localGps, setLocalGps] = useState<{ lat: number; lng: number } | null>(null);
 
-  const hasLiveGps = userLat !== null && userLng !== null && Number.isFinite(userLat) && Number.isFinite(userLng);
-  const center = hasLiveGps ? { lat: userLat as number, lng: userLng as number } : DEFAULT_FALLBACK_CENTER;
+  useEffect(() => {
+    setImgError(false);
+  }, [userPhotoURL]);
 
+  // Acquire REAL GPS automatically if parent props haven't received coordinates yet
+  useEffect(() => {
+    if (
+      userLat !== null &&
+      userLng !== null &&
+      Number.isFinite(userLat) &&
+      Number.isFinite(userLng)
+    ) {
+      setLocalGps({ lat: userLat, lng: userLng });
+      return;
+    }
+
+    if (!navigator.geolocation) return;
+    let cancelled = false;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (cancelled) return;
+        const { latitude, longitude, accuracy } = pos.coords;
+        setLocalGps({ lat: latitude, lng: longitude });
+        onRefreshLocation?.(latitude, longitude, accuracy);
+      },
+      () => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            if (cancelled) return;
+            const { latitude, longitude, accuracy } = pos.coords;
+            setLocalGps({ lat: latitude, lng: longitude });
+            onRefreshLocation?.(latitude, longitude, accuracy);
+          },
+          () => {},
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [userLat, userLng, onRefreshLocation]);
+
+  const activeLat =
+    userLat !== null && Number.isFinite(userLat) ? userLat : localGps?.lat ?? null;
+  const activeLng =
+    userLng !== null && Number.isFinite(userLng) ? userLng : localGps?.lng ?? null;
+
+  const hasLiveGps =
+    activeLat !== null &&
+    activeLng !== null &&
+    Number.isFinite(activeLat) &&
+    Number.isFinite(activeLng);
+
+  // Compute Google Maps Embed URL (100% free, zero API key, zero billing, real Google Maps street/shop detail)
+  const embedSrc = useMemo(() => {
+    if (!hasLiveGps) return null;
+    const latStr = (activeLat as number).toFixed(6);
+    const lngStr = (activeLng as number).toFixed(6);
+
+    if (routeOrigin && routeDestination) {
+      const satFlag = mapType === 'satellite' ? '&t=k' : '';
+      return `https://www.google.com/maps?saddr=${routeOrigin.lat.toFixed(
+        6
+      )},${routeOrigin.lng.toFixed(6)}&daddr=${routeDestination.lat.toFixed(
+        6
+      )},${routeDestination.lng.toFixed(6)}${satFlag}&output=embed`;
+    }
+
+    if (mapType === 'satellite') {
+      return `https://www.google.com/maps?q=${latStr},${lngStr}&z=17&t=k&output=embed`;
+    }
+    return `https://www.google.com/maps?q=${latStr},${lngStr}&z=17&output=embed`;
+  }, [hasLiveGps, activeLat, activeLng, mapType, routeOrigin, routeDestination]);
+
+  // Compute safe route distance & duration summary via OSRM when a route is requested
+  useEffect(() => {
+    if (!routeOrigin || !routeDestination) return;
+    let cancelled = false;
+    const url = `https://router.project-osrm.org/route/v1/driving/${routeOrigin.lng},${routeOrigin.lat};${routeDestination.lng},${routeDestination.lat}?overview=false&steps=true`;
+
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        const route = data?.routes?.[0];
+        if (route) {
+          const km = (route.distance / 1000).toFixed(1);
+          const mins = Math.max(1, Math.round(route.duration / 60));
+          const firstRoad = route.legs?.[0]?.steps?.[0]?.name || 'Google Maps Route';
+          onRouteResult?.(`Safe Route via ${firstRoad} • ${km}km • ${mins} mins`);
+        } else {
+          onRouteResult?.('Directions loaded in Google Maps.');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          onRouteResult?.('Directions loaded in Google Maps.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeOrigin, routeDestination, onRouteResult]);
+
+  // Refresh Map button: re-gets REAL high-accuracy GPS and reloads Google Maps iframe with new LAT,LNG
   const handleRefreshMap = useCallback(() => {
     if (!navigator.geolocation) {
       setRefreshToast('Please turn on your GPS / Location');
@@ -282,13 +183,14 @@ export const GuardMap: React.FC<GuardMapProps> = ({
     setRefreshing(true);
     const applyPos = (pos: GeolocationPosition) => {
       const { latitude, longitude, accuracy } = pos.coords;
-      setManualCenter({ lat: latitude, lng: longitude });
-      setManualZoom(17);
+      setLocalGps({ lat: latitude, lng: longitude });
+      setRefreshNonce((n) => n + 1);
       onRefreshLocation?.(latitude, longitude, accuracy);
-      setRefreshToast('Map refreshed! This is your exact location now.');
+      setRefreshToast(`Location updated (±${Math.round(accuracy)}m)`);
       setRefreshing(false);
       window.setTimeout(() => setRefreshToast(null), 3500);
     };
+
     navigator.geolocation.getCurrentPosition(
       applyPos,
       () => {
@@ -299,132 +201,133 @@ export const GuardMap: React.FC<GuardMapProps> = ({
             setRefreshToast('Please turn on your GPS / Location');
             window.setTimeout(() => setRefreshToast(null), 4000);
           },
-          { enableHighAccuracy: false, timeout: 6000, maximumAge: 30000 }
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 0 }
         );
       },
-      { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   }, [onRefreshLocation]);
 
+  const userInitial = (userName || '').trim().charAt(0).toUpperCase() || 'R';
+  const validPins = pins.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+
   return (
-    <div className={`relative w-full ${heightClassName} rounded-2xl overflow-hidden border border-slate-800 bg-[#071120]`}>
-      {isApiLoaded && hasLiveGps ? (
-        <GoogleMap
-          mapId="DEMO_MAP_ID"
-          defaultCenter={center}
-          defaultZoom={16}
-          gestureHandling="greedy"
-          disableDefaultUI={true}
-          colorScheme="DARK"
-          internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-          style={{ width: '100%', height: '100%' }}
+    <div
+      className={`relative w-full ${heightClassName} rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white`}
+      style={{ backgroundColor: '#ffffff' }}
+    >
+      {/* Real Google Maps Embed Iframe (100% Free, Zero API Key, Zero Watermark) */}
+      {embedSrc ? (
+        <iframe
+          key={`${mapType}-${refreshNonce}-${routeDestination ? `${routeDestination.lat},${routeDestination.lng}` : ''}`}
+          title="Guard AI Live Google Map"
+          src={embedSrc}
+          className="w-full h-full border-0 block bg-white"
+          loading="eager"
+          referrerPolicy="no-referrer-when-downgrade"
+          allowFullScreen
+        />
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 text-slate-700 gap-2 p-4 text-center">
+          <MapPin className="w-7 h-7 text-[#7C3AED] animate-bounce" />
+          <p className="text-xs font-bold">Getting real GPS location for Google Maps...</p>
+        </div>
+      )}
+
+      {/* Top-Right Map Type Switcher: "Map" | "Satellite" */}
+      <div
+        className="absolute top-3 right-3 z-30 flex items-center bg-white/95 backdrop-blur-sm rounded-xl border border-slate-300 shadow-md p-0.5"
+        role="group"
+        aria-label="Map Type"
+      >
+        <button
+          type="button"
+          onClick={() => setMapType('map')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-colors cursor-pointer ${
+            mapType === 'map'
+              ? 'bg-[#2E9BFF] text-white shadow-sm'
+              : 'text-slate-700 hover:bg-slate-100'
+          }`}
         >
-          <ImperativeMapCenterer targetCenter={manualCenter} targetZoom={manualZoom} />
+          Map
+        </button>
+        <button
+          type="button"
+          onClick={() => setMapType('satellite')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-colors cursor-pointer ${
+            mapType === 'satellite'
+              ? 'bg-[#2E9BFF] text-white shadow-sm'
+              : 'text-slate-700 hover:bg-slate-100'
+          }`}
+        >
+          Satellite
+        </button>
+      </div>
 
-          <RouteAndBoundsController
-            userLat={userLat}
-            userLng={userLng}
-            pins={pins}
-            fitPinsBounds={fitPinsBounds}
-            routeOrigin={routeOrigin}
-            routeDestination={routeDestination}
-            redThreatLineTo={redThreatLineTo}
-            onRouteResult={onRouteResult}
-          />
-
-          {/* Live User Marker */}
-          {showUserMarker && hasLiveGps && (
-            <AdvancedMarker position={{ lat: userLat as number, lng: userLng as number }} zIndex={999}>
-              <div className="relative flex flex-col items-center">
-                <div className="relative flex items-center justify-center">
-                  <UserAvatar photoURL={userPhotoURL} name={userName} size="md" greenBorder={true} />
-                  {movementMode === 'In Vehicle' && (
-                    <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#2E9BFF] text-white flex items-center justify-center ring-2 ring-[#050B14]">
-                      <Car className="w-3 h-3" />
-                    </span>
-                  )}
-                  {movementMode === 'In Building' && (
-                    <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#FFC400] text-slate-950 flex items-center justify-center ring-2 ring-[#050B14]">
-                      <Home className="w-3 h-3" />
-                    </span>
-                  )}
-                </div>
+      {/* Centered User Purple Marker + "You are at: [Real Street]" Overlay on top of Google Maps */}
+      {hasLiveGps && !routeDestination && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center">
+          {showUserMarker ? (
+            <div className="relative flex flex-col items-center">
+              <div className="relative w-11 h-11 rounded-full bg-[#7C3AED] border-[3px] border-white shadow-xl flex items-center justify-center overflow-hidden">
+                {userPhotoURL && !imgError ? (
+                  <img
+                    src={userPhotoURL}
+                    alt={userName || 'User'}
+                    referrerPolicy="no-referrer"
+                    onError={() => setImgError(true)}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="text-white font-extrabold text-base leading-none">
+                    {userInitial}
+                  </span>
+                )}
               </div>
-            </AdvancedMarker>
+              {movementMode === 'In Vehicle' && (
+                <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#2E9BFF] text-white text-[10px] flex items-center justify-center border-2 border-white shadow">
+                  🚗
+                </span>
+              )}
+              {movementMode === 'In Building' && (
+                <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#FFC400] text-[#050B14] text-[10px] flex items-center justify-center border-2 border-white shadow">
+                  🏢
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="w-9 h-9 rounded-full bg-[#FF2D55] border-2 border-white shadow-xl flex items-center justify-center text-white font-black text-base">
+              !
+            </div>
           )}
 
-          {/* Other Pins: Family, Threat Flags, Safe Businesses, Alerts */}
-          {pins.map((pin) => {
-            if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lng)) return null;
-            return (
-              <AdvancedMarker
-                key={pin.id}
-                position={{ lat: pin.lat, lng: pin.lng }}
-                onClick={pin.onClick}
-                zIndex={pin.kind === 'threat' || pin.isSos ? 950 : 500}
-              >
-                {pin.kind === 'family' ? (
-                  <div className="flex flex-col items-center">
-                    <div
-                      className={`rounded-full p-0.5 ${
-                        pin.isSos
-                          ? 'bg-[#FF2D55] animate-pulse'
-                          : pin.isOnline
-                          ? 'bg-[#00E67A]'
-                          : 'bg-slate-500'
-                      }`}
-                    >
-                      <UserAvatar photoURL={pin.photoURL} name={pin.label} size="sm" greenBorder={false} />
-                    </div>
-                    <span className="mt-0.5 px-1.5 py-0.5 rounded bg-[#050B14]/90 text-[10px] font-semibold text-white whitespace-nowrap border border-slate-700">
-                      {pin.label}
-                    </span>
-                  </div>
-                ) : pin.kind === 'threat' || pin.kind === 'alert' ? (
-                  <div className="flex flex-col items-center">
-                    <div className="w-8 h-8 rounded-full bg-[#FF2D55] text-white flex items-center justify-center shadow-lg ring-2 ring-white/80 animate-bounce">
-                      <AlertTriangle className="w-4 h-4" />
-                    </div>
-                    <span className="mt-0.5 px-2 py-0.5 rounded bg-[#FF2D55] text-[10px] font-bold text-white whitespace-nowrap max-w-[180px] truncate">
-                      {pin.label}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center">
-                    <div className="w-8 h-8 rounded-full bg-[#00E67A] text-slate-950 flex items-center justify-center shadow-md ring-2 ring-[#050B14]">
-                      <ShieldCheck className="w-4 h-4" />
-                    </div>
-                    <span className="mt-0.5 px-1.5 py-0.5 rounded bg-[#050B14]/90 text-[10px] font-semibold text-[#00E67A] whitespace-nowrap border border-[#00E67A]/40">
-                      {pin.label}
-                    </span>
-                  </div>
-                )}
-              </AdvancedMarker>
-            );
-          })}
-        </GoogleMap>
-      ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center text-center p-6 bg-[#071120]">
-          <p className="text-sm font-semibold text-slate-200">
-            {hasLiveGps
-              ? 'Loading live map view...'
-              : 'WAITING FOR LIVE SIGNAL... Enable location permission to center map.'}
-          </p>
+          {addressLabel && (
+            <div className="mt-1.5 px-2.5 py-1 rounded-lg bg-[#0C1626]/90 border border-white/25 text-white text-[11px] font-bold shadow-lg max-w-[230px] truncate text-center">
+              You are at: {addressLabel}
+            </div>
+          )}
         </div>
       )}
 
       {/* Red Threat Tint Overlay */}
       {dangerTint && (
-        <div className="pointer-events-none absolute inset-0 bg-[#FF2D55]/20 border-2 border-[#FF2D55] z-10" />
+        <div className="pointer-events-none absolute inset-0 bg-[#FF2D55]/20 border-2 border-[#FF2D55] z-20" />
       )}
 
-      {/* Green Spinning Radar Overlay (Scanners ONLY, transparent so street names stay readable) */}
+      {/* Night Watch Active Threat Badge Overlay */}
+      {redThreatLineTo && (
+        <div className="pointer-events-none absolute top-14 left-3 z-30 px-3 py-1.5 rounded-xl bg-[#FF2D55] text-white text-[11px] font-extrabold shadow-lg flex items-center gap-1.5 animate-pulse">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span>Active Threat Line Armed</span>
+        </div>
+      )}
+
+      {/* Green Spinning Radar Overlay (Scanners ONLY) */}
       {showRadar && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
-          <div className="relative w-56 h-56 sm:w-64 sm:h-64 rounded-full border-2 border-[#00E67A]/70 bg-[#00E67A]/10 flex items-center justify-center">
-            <div className="absolute inset-6 rounded-full border border-[#00E67A]/45" />
-            <div className="absolute inset-14 rounded-full border border-[#00E67A]/35" />
-            {/* Rotating sweep wedge */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-[25]">
+          <div className="relative w-56 h-56 sm:w-64 sm:h-64 rounded-full border-2 border-[#00C868]/80 bg-[#00E67A]/10 flex items-center justify-center">
+            <div className="absolute inset-6 rounded-full border border-[#00C868]/50" />
+            <div className="absolute inset-14 rounded-full border border-[#00C868]/40" />
             <div
               className="absolute inset-0 rounded-full animate-radar-sweep"
               style={{
@@ -432,19 +335,48 @@ export const GuardMap: React.FC<GuardMapProps> = ({
                   'conic-gradient(from 0deg, rgba(0,230,122,0.42) 0deg, rgba(0,230,122,0) 75deg, rgba(0,230,122,0) 360deg)',
               }}
             />
-            {/* Center red dot */}
-            <div className="w-3.5 h-3.5 rounded-full bg-[#FF2D55] ring-2 ring-white z-10" />
-            <span className="absolute bottom-4 px-2 py-0.5 rounded bg-[#050B14]/75 text-[11px] font-mono font-bold text-[#00E67A] tracking-wider">
+            <span className="absolute bottom-4 px-2.5 py-0.5 rounded bg-[#050B14]/85 text-[11px] font-mono font-bold text-[#00E67A] tracking-wider">
               SCANNING... {radarRadiusLabel || ''}
             </span>
           </div>
         </div>
       )}
 
-      {/* Top Overlay Slot (Banners, Threat Alerts, Night Watch Buttons) */}
+      {/* Top Overlay Slot (Clear of top-right Map/Satellite switcher) */}
       {topOverlay && (
-        <div className="absolute top-3 left-3 right-3 z-20 pointer-events-auto">
+        <div className="absolute top-3 left-3 right-40 z-30 pointer-events-auto">
           {topOverlay}
+        </div>
+      )}
+
+      {/* Interactive Pin Chips (Family / Safe Businesses / Threats) when present */}
+      {validPins.length > 0 && (
+        <div
+          className={`absolute left-3 right-36 z-30 flex gap-1.5 overflow-x-auto pointer-events-auto ${
+            bottomOverlay ? 'bottom-16' : 'bottom-3'
+          }`}
+        >
+          {validPins.slice(0, 6).map((pin) => (
+            <button
+              key={pin.id}
+              type="button"
+              onClick={() => pin.onClick?.()}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold shadow-md border whitespace-nowrap flex items-center gap-1 cursor-pointer ${
+                pin.kind === 'threat' || pin.kind === 'alert' || pin.isSos
+                  ? 'bg-[#FF2D55] border-white/60 text-white'
+                  : pin.kind === 'safe_business'
+                  ? 'bg-[#0C1626]/95 border-[#00E67A]/60 text-[#00E67A]'
+                  : 'bg-[#0C1626]/95 border-[#2E9BFF]/60 text-white'
+              }`}
+            >
+              {pin.kind === 'threat' || pin.kind === 'alert' || pin.isSos ? (
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+              ) : (
+                <ShieldCheck className="w-3 h-3 shrink-0" />
+              )}
+              <span>{pin.label}</span>
+            </button>
+          ))}
         </div>
       )}
 
@@ -453,7 +385,7 @@ export const GuardMap: React.FC<GuardMapProps> = ({
         type="button"
         onClick={handleRefreshMap}
         disabled={refreshing}
-        className="absolute right-3 top-1/2 -translate-y-1/2 z-20 min-h-[40px] px-3 py-2 rounded-xl bg-[#00E67A] hover:bg-[#00cf6d] text-slate-950 font-bold text-xs shadow-lg flex items-center gap-1.5 transition-transform active:scale-95 cursor-pointer"
+        className="absolute right-3 top-1/2 -translate-y-1/2 z-30 min-h-[40px] px-3 py-2 rounded-xl bg-[#00E67A] hover:bg-[#00cf6d] text-slate-950 font-extrabold text-xs shadow-lg flex items-center gap-1.5 transition-transform active:scale-95 cursor-pointer border border-white/80"
       >
         <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
         <span>Refresh Map</span>
@@ -461,14 +393,14 @@ export const GuardMap: React.FC<GuardMapProps> = ({
 
       {/* Refresh Toast */}
       {refreshToast && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-xl bg-[#0C1626]/95 border border-[#00E67A]/60 text-xs font-semibold text-white shadow-xl whitespace-nowrap">
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 px-3.5 py-2 rounded-xl bg-[#0C1626]/95 border border-[#00E67A]/70 text-xs font-semibold text-white shadow-xl whitespace-nowrap">
           {refreshToast}
         </div>
       )}
 
-      {/* Bottom Overlay Slot (Action Buttons sitting cleanly ON TOP of Map) */}
+      {/* Bottom Overlay Slot */}
       {bottomOverlay && (
-        <div className="absolute bottom-3 left-3 right-3 z-20 pointer-events-auto">
+        <div className="absolute bottom-3 left-3 right-3 z-30 pointer-events-auto">
           {bottomOverlay}
         </div>
       )}

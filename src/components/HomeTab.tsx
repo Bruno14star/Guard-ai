@@ -11,7 +11,6 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { useMapsLibrary } from '@vis.gl/react-google-maps';
 import {
   ShieldCheck,
   MapPin,
@@ -40,7 +39,7 @@ import {
   UserProfile,
   UserUsageStat,
 } from '../types';
-import { getWatMonthKey } from '../utils/geoPhysics';
+import { findNearestSafePlaceFree, getWatMonthKey } from '../utils/geoPhysics';
 import { GuardMap } from './GuardMap';
 import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
@@ -75,7 +74,6 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   onOpenReportModal,
   onOpenProfile,
 }) => {
-  const placesLib = useMapsLibrary('places');
   const [sansaTips, setSansaTips] = useState<{ id: string; message: string; title?: string }[]>([]);
   const [goodWishBanner, setGoodWishBanner] = useState<string | null>(null);
   const [homeVideos, setHomeVideos] = useState<HomeVideo[]>([]);
@@ -289,28 +287,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     setSosDispatching(true);
     setSosSentConfirmation(false);
 
-    // 1. Lookup nearest real safe building using Places API (New)
-    if (placesLib && location) {
-      try {
-        const { places } = await (placesLib.Place as any).searchNearby({
-          fields: ['displayName', 'formattedAddress'],
-          locationRestriction: {
-            center: { lat: location.lat, lng: location.lng },
-            radius: 2500,
-          },
-          includedPrimaryTypes: ['police', 'hospital', 'shopping_mall', 'church'],
-          maxResultCount: 3,
-        });
-        if (places && places.length > 0) {
-          setSosSafePlaceName(places[0].displayName || 'Nearest Public Safe Building');
-        }
-      } catch (err) {
-        console.warn('Places nearby lookup:', err);
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('OVER_QUERY_LIMIT') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-      }
+    // 1. Lookup nearest real safe building using free OpenStreetMap Overpass API
+    if (location) {
+      const placeName = await findNearestSafePlaceFree(location.lat, location.lng);
+      setSosSafePlaceName(placeName);
     }
 
     // 2. Write real SOS incident report for Admin + Police dispatch
@@ -323,7 +303,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           userPhone: user.phone || '',
           userState: user.userState || location.state || 'Lagos',
           incidentState: location.state || user.userState || 'Lagos',
-          incidentArea: location.area || location.city || 'Local Area',
+          incidentArea: location.area || location.city || '',
           incidentAddress: location.formattedAddress,
           incidentType: 'SOS Emergency',
           description: `LIVE SOS triggered by ${user.fullName} while ${location.movementMode} at ${location.formattedAddress}`,
@@ -403,7 +383,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </div>
         </div>
 
-        {/* Live Human Location Card (NO raw coordinates) */}
+        {/* Live Location Card: Real Nominatim Street Name + Lat/Lng/Accuracy */}
         <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-1.5">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-[#2E9BFF] flex items-center gap-1.5">
@@ -418,8 +398,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {location ? `You are at: ${location.formattedAddress}` : 'Waiting for live GPS signal...'}
           </p>
           {location && (
-            <p className="text-xs text-slate-400">
-              Street: {location.streetName} • Near: {location.landmark}
+            <p className="text-xs font-mono text-slate-400">
+              Lat: {location.lat.toFixed(5)}, Lng: {location.lng.toFixed(5)} • Accuracy: {location.accuracy} meters
             </p>
           )}
         </div>
@@ -430,6 +410,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           userLng={location?.lng ?? null}
           userName={user.fullName}
           userPhotoURL={user.photoURL}
+          addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           onRefreshLocation={onRefreshLocation}
           heightClassName="h-[360px]"
@@ -734,7 +715,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
             <div className="p-3.5 rounded-2xl bg-[#FF2D55]/15 border border-[#FF2D55]/40">
               <p className="text-sm font-bold text-white">
-                You are at: {location ? location.formattedAddress : 'Your Current Street'} - Help is coming
+                You are at: {location ? location.formattedAddress : 'Live GPS Position'} - Help is coming
               </p>
               {sosDispatching ? (
                 <p className="text-xs text-slate-300 mt-1">Sending SOS alert...</p>

@@ -202,9 +202,87 @@ export function isTimestampTodayWat(ts: any): boolean {
   return getWatDateKey(d) === getWatDateKey(new Date());
 }
 
+function formatCoordLabel(lat: number, lng: number): string {
+  return `Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}`;
+}
+
+function parseNominatimAddress(data: any, lat: number, lng: number) {
+  const addr = data?.address || {};
+  const coordFallback = formatCoordLabel(lat, lng);
+  const road =
+    addr.road ||
+    addr.street ||
+    addr.pedestrian ||
+    addr.residential ||
+    addr.footway ||
+    addr.path ||
+    '';
+  const housePrefix = addr.house_number ? `${addr.house_number} ` : '';
+  const suburb =
+    addr.suburb ||
+    addr.neighbourhood ||
+    addr.quarter ||
+    addr.city_district ||
+    '';
+  const city =
+    addr.city ||
+    addr.town ||
+    addr.village ||
+    addr.municipality ||
+    addr.county ||
+    '';
+  const rawState = String(addr.state || '').replace(/\s+State$/i, '').trim();
+  const state = /federal capital territory|abuja|fct/i.test(rawState)
+    ? 'FCT Abuja'
+    : /akwa\s*ibom/i.test(rawState)
+    ? 'Akwa Ibom'
+    : /cross\s*river/i.test(rawState)
+    ? 'Cross River'
+    : rawState;
+
+  const displayFirstPart =
+    typeof data?.display_name === 'string' && data.display_name.trim()
+      ? data.display_name.split(',')[0].trim()
+      : '';
+
+  const streetName =
+    (road ? `${housePrefix}${road}` : '') ||
+    suburb ||
+    displayFirstPart ||
+    coordFallback;
+
+  const area = suburb || city || '';
+  const landmark =
+    addr.amenity ||
+    addr.shop ||
+    addr.building ||
+    addr.office ||
+    addr.commercial ||
+    suburb ||
+    city ||
+    '';
+
+  const parts = Array.from(
+    new Set([road ? `${housePrefix}${road}` : '', suburb, city, state].filter(Boolean))
+  );
+  const formattedAddress =
+    parts.join(', ') ||
+    (typeof data?.display_name === 'string' && data.display_name.trim()) ||
+    coordFallback;
+
+  return {
+    formattedAddress,
+    streetName,
+    area,
+    city,
+    state,
+    landmark,
+  };
+}
+
 /**
- * Reverse geocode lat/lng to human address via server-side proxy (/api/geocode/reverse),
- * falling back cleanly to Nominatim or safe local label if proxy is unavailable (e.g. static hosting).
+ * Reverse geocode lat/lng to real human street address via Nominatim.
+ * If Nominatim fails, returns Lat, Lng ONLY (never fake placeholder street names).
  */
 export async function reverseGeocodeHuman(lat: number, lng: number): Promise<{
   formattedAddress: string;
@@ -213,93 +291,95 @@ export async function reverseGeocodeHuman(lat: number, lng: number): Promise<{
   city: string;
   state: string;
   landmark: string;
-  quotaExceeded?: boolean;
 }> {
+  const coordFallback = formatCoordLabel(lat, lng);
   const fallbackResult = {
-    formattedAddress: 'Current Street (Live GPS Active)',
-    streetName: 'Current Street',
-    area: 'Local Area',
-    city: 'Detected City',
+    formattedAddress: coordFallback,
+    streetName: coordFallback,
+    area: '',
+    city: '',
     state: '',
-    landmark: 'Nearby Landmark',
+    landmark: '',
   };
 
-  // 1. Try Express backend proxy (/api/geocode/reverse) with 4s timeout
+  // 1. Direct Nominatim reverse geocoding
   try {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 4000);
+    const timer = window.setTimeout(() => controller.abort(), 5000);
+    const nomUrl = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(
+      lat
+    )}&lon=${encodeURIComponent(lng)}&addressdetails=1&accept-language=en`;
+    const nRes = await fetch(nomUrl, { signal: controller.signal });
+    window.clearTimeout(timer);
+
+    if (nRes.ok) {
+      const data = await nRes.json();
+      if (data && (data.address || data.display_name)) {
+        return parseNominatimAddress(data, lat, lng);
+      }
+    }
+  } catch {
+    // Fall through to backend proxy if direct Nominatim blocked
+  }
+
+  // 2. Fallback to backend /api/geocode/reverse proxy (which also queries Nominatim)
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4500);
     const res = await fetch(
       `/api/geocode/reverse?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
       { signal: controller.signal }
     );
     window.clearTimeout(timer);
 
-    if (res.status === 429) {
-      window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-      return {
-        ...fallbackResult,
-        formattedAddress: 'Location active (address lookup quota reached)',
-        quotaExceeded: true,
-      };
-    }
-
     const contentType = res.headers.get('content-type') || '';
     if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
-      if (data && data.formattedAddress) {
+      if (data && data.source === 'nominatim' && data.formattedAddress) {
         return {
-          formattedAddress: data.formattedAddress || fallbackResult.formattedAddress,
-          streetName: data.streetName || fallbackResult.streetName,
-          area: data.area || fallbackResult.area,
-          city: data.city || fallbackResult.city,
+          formattedAddress: data.formattedAddress || coordFallback,
+          streetName: data.streetName || coordFallback,
+          area: data.area || '',
+          city: data.city || '',
           state: data.state || '',
-          landmark: data.landmark || fallbackResult.landmark,
+          landmark: data.landmark || '',
         };
       }
     }
   } catch {
-    // Proxy unavailable (e.g. static host like Netlify) or timed out — fall through to Nominatim
-  }
-
-  // 2. Fallback to OpenStreetMap Nominatim directly (CORS-enabled) with 4s timeout
-  try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 4000);
-    const nomUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
-      lat
-    )}&lon=${encodeURIComponent(lng)}&addressdetails=1`;
-    const nRes = await fetch(nomUrl, { signal: controller.signal });
-    window.clearTimeout(timer);
-
-    if (nRes.ok) {
-      const data = await nRes.json();
-      const addr = data.address || {};
-      const streetName =
-        addr.road || addr.pedestrian || addr.suburb || addr.neighbourhood || 'Current Road';
-      const area =
-        addr.suburb || addr.neighbourhood || addr.city_district || addr.town || addr.city || 'Area';
-      const city = addr.city || addr.town || addr.county || addr.state || 'City';
-      const rawState = String(addr.state || city || '').replace(/\s+State$/i, '').trim();
-      const state = /federal capital territory|abuja|fct/i.test(rawState)
-        ? 'FCT Abuja'
-        : rawState;
-      const landmark = addr.amenity || addr.building || addr.shop || area;
-      const formattedAddress =
-        [streetName, area, state].filter(Boolean).join(', ') ||
-        data.display_name ||
-        fallbackResult.formattedAddress;
-      return {
-        formattedAddress,
-        streetName,
-        area,
-        city,
-        state,
-        landmark,
-      };
-    }
-  } catch {
-    // Offline or blocked — return clean safe fallback without throwing
+    // Fall through to Lat, Lng ONLY
   }
 
   return fallbackResult;
+}
+
+/**
+ * Free OpenStreetMap Overpass API lookup for nearest real public shelter (police, hospital, mall, church)
+ */
+export async function findNearestSafePlaceFree(
+  lat: number,
+  lng: number
+): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4500);
+    const overpassQuery = `[out:json][timeout:4];(node["amenity"~"police|hospital|clinic|place_of_worship"](around:2500,${lat},${lng});node["shop"="mall"](around:2500,${lat},${lng}););out body 5;`;
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: `data=${encodeURIComponent(overpassQuery)}`,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: controller.signal,
+    });
+    window.clearTimeout(timer);
+    if (res.ok) {
+      const json = await res.json();
+      const named = (json?.elements || []).find((el: any) => el?.tags?.name);
+      if (named?.tags?.name) {
+        return String(named.tags.name);
+      }
+    }
+  } catch {
+    // Silent fallback
+  }
+  return 'Nearest Public Safe Building';
 }
