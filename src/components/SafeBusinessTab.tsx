@@ -11,6 +11,7 @@ import { Building2, Plus, Navigation, ShieldCheck, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { HumanLocation, SafeBusiness, UserProfile } from '../types';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
 import { AdBanner } from './AdBanner';
 
@@ -36,6 +37,7 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
   onRefreshLocation,
   onOpenReportModal,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
   const [verifiedBusinesses, setVerifiedBusinesses] = useState<SafeBusiness[]>([]);
   const [myPending, setMyPending] = useState<SafeBusiness[]>([]);
   const [filterType, setFilterType] = useState<string>('All');
@@ -170,8 +172,8 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
-          userName={user.fullName}
-          userPhotoURL={user.photoURL}
+          userName={globalProfile.name || user.fullName}
+          userPhotoURL={globalProfile.photo || user.photoURL}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={pins}

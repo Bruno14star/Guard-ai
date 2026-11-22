@@ -42,7 +42,7 @@ service cloud.firestore {
           'uid', 'fullName', 'username', 'phone', 'email', 'city', 'userState',
           'bio', 'photoURL', 'profilePicUrl', 'emergencyContact', 'role',
           'safetyScore', 'trust_score', 'streak', 'subscription', 'verifiedBadge',
-          'followersCount', 'followingCount', 'walletBalance', 'lastStreakDate',
+          'tutorialSeen', 'followersCount', 'followingCount', 'walletBalance', 'lastStreakDate',
           'lastActive', 'createdAt'
         ]) &&
         isValidId(data.uid) &&
@@ -62,6 +62,7 @@ service cloud.firestore {
         (!('streak' in data) || data.streak is number) &&
         (!('subscription' in data) || data.subscription in ['free', 'active', 'pending', 'expired']) &&
         (!('verifiedBadge' in data) || data.verifiedBadge is bool) &&
+        (!('tutorialSeen' in data) || data.tutorialSeen is bool) &&
         (!('followersCount' in data) || data.followersCount is number) &&
         (!('followingCount' in data) || data.followingCount is number) &&
         (!('walletBalance' in data) || data.walletBalance is number) &&
@@ -213,7 +214,7 @@ service cloud.firestore {
             'fullName', 'username', 'phone', 'city', 'userState', 'bio',
             'photoURL', 'profilePicUrl', 'emergencyContact', 'safetyScore',
             'trust_score', 'streak', 'lastStreakDate', 'lastActive',
-            'followersCount', 'followingCount'
+            'followersCount', 'followingCount', 'tutorialSeen'
           ])
         )
       );

@@ -15,6 +15,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { FamilyMember, HumanLocation, PlanType, UserProfile } from '../types';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
 import { ContinuousAlarmController } from '../utils/audioClassifier';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
 import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
@@ -42,6 +43,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
   onOpenReportModal,
   onOpenSubscriptions,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
   const [members, setMembers] = useState<FamilyMember[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [memberName, setMemberName] = useState('');
@@ -248,8 +250,8 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
-          userName={user.fullName}
-          userPhotoURL={user.photoURL}
+          userName={globalProfile.name || user.fullName}
+          userPhotoURL={globalProfile.photo || user.photoURL}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}

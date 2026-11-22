@@ -47,6 +47,7 @@ import {
   headingToSector,
   offsetLatLng,
 } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
 import { AdBanner } from './AdBanner';
 
@@ -84,6 +85,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   onOpenReportModal,
   onOpenSubscriptions,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
   const [isScanning, setIsScanning] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready to scan with live sensors.');
   const [liveAudioFrame, setLiveAudioFrame] = useState<AudioAnalysisFrame | null>(null);
@@ -711,8 +713,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
-          userName={user.fullName}
-          userPhotoURL={user.photoURL}
+          userName={globalProfile.name || user.fullName}
+          userPhotoURL={globalProfile.photo || user.photoURL}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}
@@ -736,6 +738,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  data-tutorial-target="scan-button"
                   onClick={handleToggleScan}
                   className={`px-3.5 py-2 rounded-xl font-extrabold text-xs shadow-lg cursor-pointer ${
                     isScanning ? 'bg-[#FF2D55] text-white' : 'bg-[#00E67A] text-slate-950'
@@ -793,6 +796,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
+                  data-tutorial-target="scan-button"
                   onClick={handleToggleScan}
                   className={`flex-1 min-w-[110px] py-3 px-4 rounded-xl font-extrabold text-xs shadow-lg cursor-pointer ${
                     isScanning ? 'bg-[#FF2D55] text-white' : 'bg-[#00E67A] text-slate-950'

@@ -37,6 +37,7 @@ export interface UserProfile {
   streak: number;
   subscription?: 'free' | 'active' | 'pending' | 'expired';
   verifiedBadge?: boolean;
+  tutorialSeen?: boolean;
   followersCount?: number;
   followingCount?: number;
   walletBalance?: number;

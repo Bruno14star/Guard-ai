@@ -15,6 +15,8 @@ import { Video, Camera, X, CheckCircle2, Square, CircleDot, AlertTriangle } from
 import { db, handleFirestoreError, OperationType, storage } from '../firebase';
 import { HumanLocation, UserProfile } from '../types';
 import { computeGuardAiVerificationScore, haversineMeters } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
+import { UserAvatar } from './UserAvatar';
 
 interface ReportEarnModalProps {
   open: boolean;
@@ -33,6 +35,9 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   location,
   usageStatDocId,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const reporterName = globalProfile.name || user.fullName;
+  const reporterPhoto = globalProfile.photo || user.photoURL || '';
   const [incidentType, setIncidentType] = useState('Gunshot');
   const [description, setDescription] = useState('');
   const [photoDataUrl, setPhotoDataUrl] = useState<string>('');
@@ -262,7 +267,7 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
         await addDoc(collection(db, 'incident_reports'), {
           reportId,
           userId: user.uid,
-          userName: user.fullName,
+          userName: reporterName,
           userPhone: user.phone || '',
           userState: user.userState || location.state || 'Lagos',
           incidentState: location.state || user.userState || 'Lagos',
@@ -318,17 +323,28 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#0C1626] border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-extrabold text-white">Report &amp; Earn ₦5,000</h2>
-            <p className="text-xs text-slate-400">
-              Verified by Guard AI + Admin before publishing to Alerts
-            </p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <UserAvatar
+              photoURL={reporterPhoto}
+              name={reporterName}
+              size="40"
+              borderVariant="purple"
+              fallbackVariant="purple"
+            />
+            <div className="min-w-0">
+              <h2 className="text-lg font-extrabold text-white truncate">
+                Report &amp; Earn ₦5,000
+              </h2>
+              <p className="text-xs text-slate-400 truncate">
+                Reporter: {reporterName} • Verified by Guard AI + Admin
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-10 h-10 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center hover:text-white cursor-pointer"
+            className="w-10 h-10 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center hover:text-white cursor-pointer shrink-0"
             aria-label="Close Report Modal"
           >
             <X className="w-5 h-5" />

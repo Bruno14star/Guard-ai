@@ -16,6 +16,7 @@ import { Shield, Lock, Mail, Phone, User, MapPin, ArrowRight, Eye, EyeOff } from
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import { NIGERIAN_STATES } from '../data/nigeriaPoliceSeed';
 import { reverseGeocodeHuman } from '../utils/geoPhysics';
+import { seedGlobalUserProfile } from '../utils/userProfileStore';
 
 interface SplashAndAuthProps {
   onAuthenticated: () => void;
@@ -105,6 +106,7 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
           streak: 1,
           subscription: 'free',
           verifiedBadge: false,
+          tutorialSeen: false,
           followersCount: 0,
           followingCount: 0,
           walletBalance: 0,
@@ -193,6 +195,7 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
         emergencyContact: '',
         photoURL: cred.user.photoURL || '',
       });
+      seedGlobalUserProfile(cred.user.displayName || 'Guard AI Member', cred.user.photoURL || '');
       onAuthenticated();
     } catch (err: any) {
       setError(err?.message || 'Google sign-in failed. Please try again.');
@@ -223,13 +226,15 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
             ? `${emergencyName.trim()} (${emergencyPhone.trim()})`
             : emergencyPhone.trim(),
         });
+        seedGlobalUserProfile(fullName.trim(), '');
       } else {
         if (!email.trim() || !password) {
           setError('Enter your email and password.');
           setLoading(false);
           return;
         }
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+        seedGlobalUserProfile(cred.user.displayName || '', cred.user.photoURL || '');
       }
       onAuthenticated();
     } catch (err: any) {

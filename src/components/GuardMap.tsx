@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, MapPin, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { MovementMode } from '../types';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 
 export interface MapPinItem {
   id: string;
@@ -60,6 +61,10 @@ export const GuardMap: React.FC<GuardMapProps> = ({
   bottomOverlay,
   showUserMarker = true,
 }) => {
+  const globalProfile = useGlobalUserProfile(userName, userPhotoURL);
+  const resolvedName = globalProfile.name || userName || '';
+  const resolvedPhoto = globalProfile.photo || userPhotoURL || '';
+
   const [mapType, setMapType] = useState<'map' | 'satellite'>('map');
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -69,7 +74,7 @@ export const GuardMap: React.FC<GuardMapProps> = ({
 
   useEffect(() => {
     setImgError(false);
-  }, [userPhotoURL]);
+  }, [resolvedPhoto]);
 
   // Acquire REAL GPS automatically if parent props haven't received coordinates yet
   useEffect(() => {
@@ -208,7 +213,7 @@ export const GuardMap: React.FC<GuardMapProps> = ({
     );
   }, [onRefreshLocation]);
 
-  const userInitial = (userName || '').trim().charAt(0).toUpperCase() || 'R';
+  const userInitial = resolvedName.trim().charAt(0).toUpperCase() || 'G';
   const validPins = pins.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
 
   return (
@@ -264,16 +269,16 @@ export const GuardMap: React.FC<GuardMapProps> = ({
         </button>
       </div>
 
-      {/* Centered User Purple Marker + "You are at: [Real Street]" Overlay on top of Google Maps */}
+      {/* Centered User Profile Picture Marker with Purple Border + "You are at: [Real Street]" Overlay */}
       {hasLiveGps && !routeDestination && (
         <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center">
           {showUserMarker ? (
             <div className="relative flex flex-col items-center">
-              <div className="relative w-11 h-11 rounded-full bg-[#7C3AED] border-[3px] border-white shadow-xl flex items-center justify-center overflow-hidden">
-                {userPhotoURL && !imgError ? (
+              <div className="relative w-12 h-12 rounded-full bg-[#7C3AED] border-[3px] border-[#7C3AED] ring-2 ring-white shadow-xl flex items-center justify-center overflow-hidden">
+                {resolvedPhoto && !imgError ? (
                   <img
-                    src={userPhotoURL}
-                    alt={userName || 'User'}
+                    src={resolvedPhoto}
+                    alt={resolvedName || 'User'}
                     referrerPolicy="no-referrer"
                     onError={() => setImgError(true)}
                     className="w-full h-full object-cover"

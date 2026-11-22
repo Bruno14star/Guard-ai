@@ -22,6 +22,7 @@
         "streak": { "type": "number" },
         "subscription": { "type": "string", "enum": ["free", "active", "pending", "expired"] },
         "verifiedBadge": { "type": "boolean" },
+        "tutorialSeen": { "type": "boolean" },
         "followersCount": { "type": "number" },
         "followingCount": { "type": "number" },
         "walletBalance": { "type": "number" },

@@ -17,6 +17,7 @@ import {
 import { X, UserPlus, UserCheck, MessageSquare, Send, ShieldCheck, MapPin } from 'lucide-react';
 import { db } from '../firebase';
 import { PublicProfile } from '../types';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { UserAvatar } from './UserAvatar';
 
 interface UserProfileModalProps {
@@ -40,6 +41,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   currentUserName,
   onClose,
 }) => {
+  const globalProfile = useGlobalUserProfile(currentUserName, '');
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [isFollowing, setIsFollowing] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -158,10 +160,18 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
         ) : (
           <>
             <div className="flex items-center gap-4">
-              <UserAvatar photoURL={profile.photoURL} name={profile.fullName} size="lg" />
+              <UserAvatar
+                photoURL={targetUserId === currentUid ? globalProfile.photo || profile.photoURL : profile.photoURL}
+                name={targetUserId === currentUid ? globalProfile.name || profile.fullName : profile.fullName}
+                size="lg"
+                borderVariant={targetUserId === currentUid ? 'purple' : 'green'}
+                fallbackVariant={targetUserId === currentUid ? 'purple' : 'grey'}
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <h3 className="text-lg font-extrabold text-white truncate">{profile.fullName}</h3>
+                  <h3 className="text-lg font-extrabold text-white truncate">
+                    {targetUserId === currentUid ? globalProfile.name || profile.fullName : profile.fullName}
+                  </h3>
                   {profile.verifiedBadge && <ShieldCheck className="w-4 h-4 text-[#00E67A] shrink-0" />}
                 </div>
                 <p className="text-xs text-slate-400">@{profile.username || 'guardmember'}</p>

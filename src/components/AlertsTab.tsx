@@ -12,7 +12,9 @@ import { Bell, CheckCircle2, MapPin, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { AlertItem, HumanLocation, UserProfile } from '../types';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap } from './GuardMap';
+import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
 
 interface AlertsTabProps {
@@ -23,10 +25,12 @@ interface AlertsTabProps {
 }
 
 export const AlertsTab: React.FC<AlertsTabProps> = ({
+  user,
   location,
   onRefreshLocation,
   onOpenReportModal,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
 
@@ -132,11 +136,25 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
                   className="bg-[#0C1626] border border-slate-800 hover:border-[#FF2D55]/50 rounded-2xl p-4 space-y-2 cursor-pointer transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="px-2.5 py-0.5 rounded-lg bg-[#FF2D55]/15 text-[#FF2D55] text-xs font-extrabold">
-                      {a.type}
-                    </span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <UserAvatar
+                        photoURL={a.userId === user.uid ? globalProfile.photo : undefined}
+                        name={a.userId === user.uid ? globalProfile.name : a.userName || 'Reporter'}
+                        size="xs"
+                        borderVariant={a.userId === user.uid ? 'purple' : 'none'}
+                        fallbackVariant={a.userId === user.uid ? 'purple' : 'grey'}
+                      />
+                      <span className="px-2.5 py-0.5 rounded-lg bg-[#FF2D55]/15 text-[#FF2D55] text-xs font-extrabold">
+                        {a.type}
+                      </span>
+                      {a.userName && (
+                        <span className="text-[11px] font-semibold text-slate-300 truncate">
+                          {a.userId === user.uid ? globalProfile.name : a.userName}
+                        </span>
+                      )}
+                    </div>
                     <span
-                      className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                      className={`text-[11px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
                         a.status === 'Resolved'
                           ? 'bg-[#00E67A]/15 text-[#00E67A]'
                           : 'bg-[#FFC400]/15 text-[#FFC400]'
@@ -195,6 +213,8 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
             <GuardMap
               userLat={selectedAlert.lat ?? location?.lat ?? null}
               userLng={selectedAlert.lng ?? location?.lng ?? null}
+              userName={globalProfile.name || user.fullName}
+              userPhotoURL={globalProfile.photo || user.photoURL}
               addressLabel={selectedAlert.address || null}
               pins={
                 Number.isFinite(selectedAlert.lat) && Number.isFinite(selectedAlert.lng)

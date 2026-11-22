@@ -42,6 +42,8 @@ import {
 } from '../types';
 import { NIGERIA_POLICE_SEED } from '../data/nigeriaPoliceSeed';
 import { computeLeaderboardPoints, getWatMonthKey, isTimestampTodayWat } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
+import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
 
 interface AdminTabProps {
@@ -56,6 +58,7 @@ interface LiveUserCoord {
 }
 
 export const AdminTab: React.FC<AdminTabProps> = ({ adminUser }) => {
+  const globalProfile = useGlobalUserProfile(adminUser.fullName, adminUser.photoURL);
   const [subSection, setSubSection] = useState<
     'overview' | 'reports' | 'police' | 'payments' | 'leaderboard' | 'broadcast'
   >('reports');
@@ -552,22 +555,39 @@ export const AdminTab: React.FC<AdminTabProps> = ({ adminUser }) => {
                 No incident reports submitted yet.
               </p>
             ) : (
-              reports.map((rep) => (
+              reports.map((rep) => {
+                const authorUser = allUsers.find((u) => u.uid === rep.userId);
+                const isMine = rep.userId === adminUser.uid;
+                const repAvatar = isMine
+                  ? globalProfile.photo || adminUser.photoURL
+                  : authorUser?.photoURL;
+                return (
                 <div
                   key={rep.id}
                   className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <span className="text-xs font-extrabold text-[#FF2D55]">
-                        {rep.incidentType}
-                      </span>
-                      <h3 className="text-sm font-bold text-white">{rep.userName}</h3>
-                      <p className="text-xs text-slate-400">{rep.incidentAddress}</p>
-                      <p className="text-[11px] font-mono text-slate-500">
-                        Admin Coords: {rep.gpsLat?.toFixed(5)}, {rep.gpsLng?.toFixed(5)} • State:{' '}
-                        {rep.incidentState || 'Unknown'}
-                      </p>
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <UserAvatar
+                        photoURL={repAvatar}
+                        name={isMine ? globalProfile.name : rep.userName}
+                        size="40"
+                        borderVariant={isMine ? 'purple' : 'none'}
+                        fallbackVariant={isMine ? 'purple' : 'grey'}
+                      />
+                      <div className="min-w-0">
+                        <span className="text-xs font-extrabold text-[#FF2D55]">
+                          {rep.incidentType}
+                        </span>
+                        <h3 className="text-sm font-bold text-white truncate">
+                          {isMine ? globalProfile.name : rep.userName}
+                        </h3>
+                        <p className="text-xs text-slate-400 truncate">{rep.incidentAddress}</p>
+                        <p className="text-[11px] font-mono text-slate-500">
+                          Admin Coords: {rep.gpsLat?.toFixed(5)}, {rep.gpsLng?.toFixed(5)} • State:{' '}
+                          {rep.incidentState || 'Unknown'}
+                        </p>
+                      </div>
                     </div>
                     <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-[11px] font-bold text-[#FFC400] shrink-0">
                       {rep.status}
@@ -620,7 +640,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({ adminUser }) => {
                     </button>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         )}

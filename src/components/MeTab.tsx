@@ -20,6 +20,7 @@ import {
   Clock,
   Copy,
   CreditCard,
+  HelpCircle,
   LogOut,
   RefreshCw,
   Settings,
@@ -41,6 +42,12 @@ import {
   UserUsageStat,
 } from '../types';
 import { getWatMonthKey } from '../utils/geoPhysics';
+import {
+  compressImageTo500,
+  saveUserProfileName,
+  saveUserProfilePhoto,
+  useGlobalUserProfile,
+} from '../utils/userProfileStore';
 import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
 
@@ -54,7 +61,10 @@ interface MeTabProps {
   onToggleDarkMode: () => void;
   onOpenReportModal: () => void;
   onOpenProfile: (uid: string) => void;
+  onReplayTutorial?: () => void;
   openSubSectionSignal?: number;
+  openProfileSectionSignal?: number;
+  openSettingsSectionSignal?: number;
 }
 
 function getMonthCountdown(): string {
@@ -76,14 +86,21 @@ export const MeTab: React.FC<MeTabProps> = ({
   onToggleDarkMode,
   onOpenReportModal,
   onOpenProfile,
+  onReplayTutorial,
   openSubSectionSignal,
+  openProfileSectionSignal,
+  openSettingsSectionSignal,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const displayName = globalProfile.name || user.fullName;
+  const displayPhoto = globalProfile.photo || user.photoURL || '';
+
   const [section, setSection] = useState<'profile' | 'subscriptions' | 'leaderboard' | 'settings'>(
     'profile'
   );
 
   // Profile Edit State
-  const [fullName, setFullName] = useState(user.fullName || '');
+  const [fullName, setFullName] = useState(displayName || '');
   const [username, setUsername] = useState(user.username || '');
   const [phone, setPhone] = useState(user.phone || '');
   const [city, setCity] = useState(user.city || '');
@@ -123,6 +140,18 @@ export const MeTab: React.FC<MeTabProps> = ({
       setSection('subscriptions');
     }
   }, [openSubSectionSignal]);
+
+  useEffect(() => {
+    if (openProfileSectionSignal && openProfileSectionSignal > 0) {
+      setSection('profile');
+    }
+  }, [openProfileSectionSignal]);
+
+  useEffect(() => {
+    if (openSettingsSectionSignal && openSettingsSectionSignal > 0) {
+      setSection('settings');
+    }
+  }, [openSettingsSectionSignal]);
 
   useEffect(() => {
     const id = window.setInterval(() => setCountdown(getMonthCountdown()), 30000);
@@ -264,87 +293,71 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
   }, [section]);
 
-  // Circular photo crop + upload
-  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Global profile picture compress (max 500x500, max 500KB) + save to localStorage ("guard_user_photo")
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingPhoto(true);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = async () => {
-        const size = 160;
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+    setProfileSavedMsg(null);
+    try {
+      const { localDataUrl, firestoreSafeDataUrl } = await compressImageTo500(file);
 
-        // Circular clip crop
-        ctx.beginPath();
-        ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.clip();
+      // Save ONCE globally to localStorage ("guard_user_photo" & "guard_user_name")
+      // so Home, Map, SOS, Report, Leaderboard update INSTANTLY without refresh
+      saveUserProfilePhoto(localDataUrl);
+      saveUserProfileName(fullName.trim() || displayName || user.fullName);
+      setProfileSavedMsg('Profile picture updated everywhere!');
 
-        const minSide = Math.min(img.width, img.height);
-        const sx = (img.width - minSide) / 2;
-        const sy = (img.height - minSide) / 2;
-        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
+      // Best-effort non-blocking sync to Firestore/Storage so other users can also see it
+      let cloudUrl = firestoreSafeDataUrl;
+      try {
+        const blob = await (await fetch(localDataUrl)).blob();
+        const sRef = ref(storage, `users/${user.uid}/profile.jpg`);
+        await uploadBytes(sRef, blob);
+        cloudUrl = await getDownloadURL(sRef);
+      } catch {
+        cloudUrl = firestoreSafeDataUrl;
+      }
 
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
-        let finalUrl = dataUrl;
-
-        try {
-          const blob = await (await fetch(dataUrl)).blob();
-          const sRef = ref(storage, `users/${user.uid}/profile.jpg`);
-          await uploadBytes(sRef, blob);
-          finalUrl = await getDownloadURL(sRef);
-        } catch {
-          // Fallback to compact circular JPEG Data URL (allowed up to 150,000 chars in rules)
-          finalUrl = dataUrl;
+      if (cloudUrl.length <= 145000) {
+        updateDoc(doc(db, 'users', user.uid), {
+          photoURL: cloudUrl,
+          profilePicUrl: cloudUrl,
+        }).catch(() => {});
+        updateDoc(doc(db, 'public_profiles', user.uid), {
+          photoURL: cloudUrl,
+        }).catch(() => {});
+        setDoc(
+          doc(db, 'me_profiles', user.uid),
+          {
+            userId: user.uid,
+            photoURL: cloudUrl,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ).catch(() => {});
+        if (usageStatDocId) {
+          updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
+            avatar: cloudUrl,
+          }).catch(() => {});
         }
-
-        try {
-          await updateDoc(doc(db, 'users', user.uid), {
-            photoURL: finalUrl,
-            profilePicUrl: finalUrl,
-          });
-          await updateDoc(doc(db, 'public_profiles', user.uid), {
-            photoURL: finalUrl,
-          });
-          await setDoc(
-            doc(db, 'me_profiles', user.uid),
-            {
-              userId: user.uid,
-              photoURL: finalUrl,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-          if (usageStatDocId) {
-            await updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
-              avatar: finalUrl,
-            });
-          }
-          setProfileSavedMsg('Profile photo updated.');
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
-        } finally {
-          setUploadingPhoto(false);
-        }
-      };
-      img.src = String(reader.result);
-    };
-    reader.readAsDataURL(file);
+      }
+    } catch {
+      setProfileSavedMsg('Could not process selected photo.');
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingProfile(true);
     setProfileSavedMsg(null);
+    const nextName = fullName.trim() || user.fullName;
+    saveUserProfileName(nextName);
     try {
       await updateDoc(doc(db, 'users', user.uid), {
-        fullName: fullName.trim() || user.fullName,
+        fullName: nextName,
         username: username.trim(),
         phone: phone.trim(),
         city: city.trim(),
@@ -353,7 +366,7 @@ export const MeTab: React.FC<MeTabProps> = ({
         emergencyContact: emergencyContact.trim(),
       });
       await updateDoc(doc(db, 'public_profiles', user.uid), {
-        fullName: fullName.trim() || user.fullName,
+        fullName: nextName,
         username: username.trim(),
         city: city.trim(),
         userState,
@@ -363,7 +376,7 @@ export const MeTab: React.FC<MeTabProps> = ({
         doc(db, 'me_profiles', user.uid),
         {
           userId: user.uid,
-          fullName: fullName.trim() || user.fullName,
+          fullName: nextName,
           phone: phone.trim(),
           city: city.trim(),
           userState,
@@ -375,10 +388,10 @@ export const MeTab: React.FC<MeTabProps> = ({
       );
       if (usageStatDocId) {
         await updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
-          name: fullName.trim() || user.fullName,
+          name: nextName,
         });
       }
-      setProfileSavedMsg('Profile saved to cloud.');
+      setProfileSavedMsg('Profile saved.');
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
     } finally {
@@ -484,8 +497,14 @@ export const MeTab: React.FC<MeTabProps> = ({
             {/* Avatar + Wallet Card */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-4">
               <div className="flex items-center gap-4">
-                <div className="relative">
-                  <UserAvatar photoURL={user.photoURL} name={user.fullName} size="xl" />
+                <div className="relative" data-tutorial-target="profile-avatar-circle">
+                  <UserAvatar
+                    photoURL={displayPhoto}
+                    name={displayName}
+                    size="xl"
+                    borderVariant="purple"
+                    fallbackVariant="purple"
+                  />
                   <label className="absolute bottom-0 right-0 w-8 h-8 rounded-full bg-[#00E67A] text-slate-950 flex items-center justify-center shadow-lg cursor-pointer ring-2 ring-[#0C1626]">
                     <Camera className="w-4 h-4" />
                     <input
@@ -497,7 +516,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                   </label>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h2 className="text-lg font-extrabold text-white truncate">{user.fullName}</h2>
+                  <h2 className="text-lg font-extrabold text-white truncate">{displayName}</h2>
                   <p className="text-xs text-slate-400 truncate">
                     {user.email || user.phone || 'Guard AI Member'}
                   </p>
@@ -606,16 +625,25 @@ export const MeTab: React.FC<MeTabProps> = ({
                   {myReports.map((r) => (
                     <div
                       key={r.id}
-                      className="p-3 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between gap-2 text-xs"
+                      className="p-3 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between gap-2.5 text-xs"
                     >
-                      <div className="min-w-0">
-                        <p className="font-bold text-white truncate">
-                          {r.incidentType} • {r.incidentAddress}
-                        </p>
-                        <p className="text-[11px] text-slate-400">
-                          Status: {r.status} • Reward:{' '}
-                          {r.paymentStatus === 'paid' ? 'Paid ₦5,000' : 'Unpaid'}
-                        </p>
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <UserAvatar
+                          photoURL={displayPhoto}
+                          name={displayName}
+                          size="sm"
+                          borderVariant="purple"
+                          fallbackVariant="purple"
+                        />
+                        <div className="min-w-0">
+                          <p className="font-bold text-white truncate">
+                            {r.incidentType} • {r.incidentAddress}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {displayName} • Status: {r.status} • Reward:{' '}
+                            {r.paymentStatus === 'paid' ? 'Paid ₦5,000' : 'Unpaid'}
+                          </p>
+                        </div>
                       </div>
                       <span
                         className={`px-2 py-1 rounded-lg font-bold text-[10px] shrink-0 ${
@@ -804,13 +832,29 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
 
-            {/* Gold My Row Card */}
-            {myStat && (
-              <div className="p-4 rounded-2xl bg-[#FFC400]/10 border-2 border-[#FFC400]/60 space-y-2">
-                <div className="flex items-center justify-between text-xs font-extrabold text-[#FFC400]">
-                  <span>Your Current Rank: #{myIndex + 1}</span>
-                  <span>{myStat.totalPoints} pts</span>
+            {/* Gold My Row Card: Always show MY picture + MY points at top */}
+            <div className="p-4 rounded-2xl bg-[#FFC400]/10 border-2 border-[#FFC400]/60 space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <UserAvatar
+                    photoURL={displayPhoto}
+                    name={displayName}
+                    size="40"
+                    borderVariant="purple"
+                    fallbackVariant="purple"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-xs font-extrabold text-white truncate">{displayName}</p>
+                    <p className="text-[11px] font-bold text-[#FFC400]">
+                      {myStat ? `Your Current Rank: #${myIndex + 1}` : 'Your Score This Month'}
+                    </p>
+                  </div>
                 </div>
+                <span className="text-sm font-mono font-extrabold text-[#FFC400] shrink-0">
+                  {myStat ? myStat.totalPoints : 20} pts
+                </span>
+              </div>
+              {myStat && (
                 <div className="w-full h-2 rounded-full bg-[#050B14] overflow-hidden">
                   <div
                     className="h-full bg-[#FFC400]"
@@ -819,8 +863,8 @@ export const MeTab: React.FC<MeTabProps> = ({
                     }}
                   />
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Real Table */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl overflow-hidden">
@@ -870,9 +914,15 @@ export const MeTab: React.FC<MeTabProps> = ({
                             </td>
                             <td className="py-2.5 px-3">
                               <div className="flex items-center gap-2">
-                                <UserAvatar photoURL={row.avatar} name={row.name} size="xs" />
+                                <UserAvatar
+                                  photoURL={isMe ? displayPhoto : row.avatar}
+                                  name={isMe ? displayName : row.name}
+                                  size="xs"
+                                  borderVariant={isMe ? 'purple' : 'green'}
+                                  fallbackVariant={isMe ? 'purple' : 'grey'}
+                                />
                                 <span className="font-semibold text-white truncate max-w-[110px]">
-                                  {row.name}
+                                  {isMe ? displayName : row.name}
                                 </span>
                               </div>
                             </td>
@@ -989,6 +1039,25 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
 
+            {/* Settings > Help: Replay Tutorial */}
+            <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <HelpCircle className="w-4 h-4 text-[#2E9BFF]" />
+                <h3 className="text-sm font-extrabold text-white">Help</h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                Want to see how every button in Guard AI works again?
+              </p>
+              <button
+                type="button"
+                onClick={() => onReplayTutorial?.()}
+                className="w-full py-3 rounded-xl bg-[#2E9BFF] hover:bg-[#1e88eb] text-white font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <HelpCircle className="w-4 h-4" />
+                <span>Replay Tutorial</span>
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => signOut(auth)}
@@ -1002,6 +1071,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 
         <button
           type="button"
+          data-tutorial-target="report-earn-button"
           onClick={onOpenReportModal}
           className="w-full min-h-[48px] py-3 px-4 rounded-2xl bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-sm cursor-pointer"
         >

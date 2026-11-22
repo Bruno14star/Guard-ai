@@ -51,6 +51,15 @@ import { MeTab } from './components/MeTab';
 import { AdminTab } from './components/AdminTab';
 import { ReportEarnModal } from './components/ReportEarnModal';
 import { UserProfileModal } from './components/UserProfileModal';
+import { TutorialOverlay } from './components/TutorialOverlay';
+import {
+  getSavedTutorialStep,
+  getTutorialSeenLocal,
+  loadUserProfile,
+  seedGlobalUserProfile,
+  setTutorialSeenLocal,
+  useGlobalUserProfile,
+} from './utils/userProfileStore';
 
 export default function App() {
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
@@ -85,9 +94,17 @@ export default function App() {
     totalUsageMinutes: 0,
   });
 
-  // Modals
+  // Modals & First-Time Tutorial State
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [profileModalUid, setProfileModalUid] = useState<string | null>(null);
+  const [openSosSignal, setOpenSosSignal] = useState<number>(0);
+  const [openProfileSectionSignal, setOpenProfileSectionSignal] = useState<number>(0);
+  const [openSettingsSectionSignal, setOpenSettingsSectionSignal] = useState<number>(0);
+  const [tutorialOpen, setTutorialOpen] = useState<boolean>(false);
+  const [tutorialStep, setTutorialStep] = useState<number>(() => getSavedTutorialStep());
+  const tutorialEvaluatedUidRef = useRef<string | null>(null);
+
+  const globalProfile = useGlobalUserProfile(userProfile?.fullName, userProfile?.photoURL);
 
   // Dark Mode class toggle
   useEffect(() => {
@@ -104,6 +121,8 @@ export default function App() {
       if (!u) {
         setUserProfile(null);
         setPermissionsReady(false);
+        setTutorialOpen(false);
+        tutorialEvaluatedUidRef.current = null;
       }
     });
     return () => unsub();
@@ -147,7 +166,7 @@ export default function App() {
     };
   }, [fbUser]);
 
-  // Listen to users/{uid}
+  // Listen to users/{uid} & sync single global localStorage profile
   useEffect(() => {
     if (!fbUser) {
       setUserDocExists(false);
@@ -157,16 +176,22 @@ export default function App() {
       doc(db, 'users', fbUser.uid),
       (snap) => {
         if (snap.exists()) {
+          const data = snap.data() as UserProfile;
           setUserDocExists(true);
-          setUserProfile(snap.data() as UserProfile);
+          setUserProfile(data);
+          loadUserProfile({ name: data.fullName, photo: data.photoURL });
+          seedGlobalUserProfile(data.fullName, data.photoURL);
         } else {
           setUserDocExists(false);
+          const fallbackName = fbUser.displayName || 'Guard AI Member';
+          const fallbackPhoto = fbUser.photoURL || '';
+          loadUserProfile({ name: fallbackName, photo: fallbackPhoto });
           // Minimal transient profile while SplashAndAuth provisions Firestore doc
           setUserProfile({
             uid: fbUser.uid,
-            fullName: fbUser.displayName || 'Guard AI Member',
+            fullName: fallbackName,
             email: fbUser.email || '',
-            photoURL: fbUser.photoURL || '',
+            photoURL: fallbackPhoto,
             role: ADMIN_EMAILS.includes((fbUser.email || '').toLowerCase()) ? 'admin' : 'user',
             safetyScore: 100,
             trust_score: 100,
@@ -179,6 +204,19 @@ export default function App() {
     );
     return () => unsub();
   }, [fbUser]);
+
+  // Auto-open First-Time Tutorial once after Sign Up / Sign In if not seen yet
+  useEffect(() => {
+    if (!fbUser || !userDocExists || !permissionsReady || !userProfile) return;
+    if (tutorialEvaluatedUidRef.current === fbUser.uid) return;
+    tutorialEvaluatedUidRef.current = fbUser.uid;
+
+    const alreadySeen = userProfile.tutorialSeen === true || getTutorialSeenLocal();
+    if (!alreadySeen) {
+      setTutorialStep(getSavedTutorialStep());
+      setTutorialOpen(true);
+    }
+  }, [fbUser, userDocExists, permissionsReady, userProfile]);
 
   // Ensure monthly user_usage_stats doc & update daily streak
   useEffect(() => {
@@ -493,6 +531,45 @@ export default function App() {
     return userProfile?.role === 'admin' || ADMIN_EMAILS.includes(email);
   }, [userProfile, fbUser]);
 
+  const markTutorialSeen = useCallback(
+    (targetTab: AppTab = 'home', openHelp = false) => {
+      setTutorialOpen(false);
+      setTutorialSeenLocal(true);
+      setActiveTab(targetTab);
+      if (openHelp) {
+        setOpenSettingsSectionSignal((n) => n + 1);
+      }
+      if (fbUser) {
+        updateDoc(doc(db, 'users', fbUser.uid), {
+          tutorialSeen: true,
+        }).catch(() => {});
+      }
+    },
+    [fbUser]
+  );
+
+  const handleReplayTutorial = useCallback(() => {
+    setTutorialSeenLocal(false);
+    setTutorialStep(0);
+    setActiveTab('home');
+    setTutorialOpen(true);
+    if (fbUser) {
+      updateDoc(doc(db, 'users', fbUser.uid), {
+        tutorialSeen: false,
+      }).catch(() => {});
+    }
+  }, [fbUser]);
+
+  const handleInterruptTutorialForSos = useCallback(() => {
+    setTutorialOpen(false);
+    setActiveTab('home');
+    setOpenSosSignal((n) => n + 1);
+  }, []);
+
+  const handleEnsureMeProfileSection = useCallback(() => {
+    setOpenProfileSectionSignal((n) => n + 1);
+  }, []);
+
   const scansToday = roadToday + vehicleToday + buildingToday;
 
   // Loading auth
@@ -565,6 +642,7 @@ export default function App() {
               }}
               onOpenReportModal={() => setReportModalOpen(true)}
               onOpenProfile={(uid) => setProfileModalUid(uid)}
+              openSosSignal={openSosSignal}
             />
           )}
 
@@ -638,7 +716,10 @@ export default function App() {
               onToggleDarkMode={() => setDarkMode((d) => !d)}
               onOpenReportModal={() => setReportModalOpen(true)}
               onOpenProfile={(uid) => setProfileModalUid(uid)}
+              onReplayTutorial={handleReplayTutorial}
               openSubSectionSignal={openSubSignal}
+              openProfileSectionSignal={openProfileSectionSignal}
+              openSettingsSectionSignal={openSettingsSectionSignal}
             />
           )}
 
@@ -658,6 +739,7 @@ export default function App() {
                 <button
                   key={item.id}
                   type="button"
+                  data-tutorial-target={`nav-${item.id}`}
                   onClick={() => setActiveTab(item.id)}
                   className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl min-w-[48px] transition-colors cursor-pointer ${
                     active
@@ -675,6 +757,21 @@ export default function App() {
           </div>
         </nav>
 
+        {/* First-Time Spotlight Tutorial Overlay (Never blocks SOS) */}
+        <TutorialOverlay
+          open={tutorialOpen}
+          stepIndex={tutorialStep}
+          userName={globalProfile.name || userProfile.fullName}
+          userPhotoURL={globalProfile.photo || userProfile.photoURL}
+          onChangeStep={setTutorialStep}
+          onSwitchTab={setActiveTab}
+          onEnsureMeProfileSection={handleEnsureMeProfileSection}
+          onOpenMeHelp={() => markTutorialSeen('me', true)}
+          onComplete={() => markTutorialSeen('home', false)}
+          onSkip={() => markTutorialSeen('home', false)}
+          onInterruptForSos={handleInterruptTutorialForSos}
+        />
+
         {/* Global Report & Earn ₦5,000 Modal */}
         <ReportEarnModal
           open={reportModalOpen}
@@ -688,7 +785,7 @@ export default function App() {
         <UserProfileModal
           targetUserId={profileModalUid}
           currentUid={userProfile.uid}
-          currentUserName={userProfile.fullName}
+          currentUserName={globalProfile.name || userProfile.fullName}
           onClose={() => setProfileModalUid(null)}
         />
     </div>

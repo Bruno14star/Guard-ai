@@ -40,6 +40,7 @@ import {
   UserUsageStat,
 } from '../types';
 import { findNearestSafePlaceFree, getWatMonthKey } from '../utils/geoPhysics';
+import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap } from './GuardMap';
 import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
@@ -54,6 +55,7 @@ interface HomeTabProps {
   onNavigateScanner: (sub: ScannerSubTab) => void;
   onOpenReportModal: () => void;
   onOpenProfile: (uid: string) => void;
+  openSosSignal?: number;
 }
 
 interface CommentItem {
@@ -73,7 +75,11 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   onNavigateScanner,
   onOpenReportModal,
   onOpenProfile,
+  openSosSignal,
 }) => {
+  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const displayName = globalProfile.name || user.fullName;
+  const displayPhoto = globalProfile.photo || user.photoURL || '';
   const [sansaTips, setSansaTips] = useState<{ id: string; message: string; title?: string }[]>([]);
   const [goodWishBanner, setGoodWishBanner] = useState<string | null>(null);
   const [homeVideos, setHomeVideos] = useState<HomeVideo[]>([]);
@@ -324,6 +330,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     setSosDispatching(false);
   };
 
+  useEffect(() => {
+    if (openSosSignal && openSosSignal > 0) {
+      void handleTriggerSos();
+    }
+  }, [openSosSignal]);
+
   const scanCapLabel = activePlan === 'Free' ? `${scansToday} / 2` : `${scansToday} / Unlimited`;
 
   return (
@@ -337,11 +349,45 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </div>
         )}
 
-        {/* Top Status Card */}
-        <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3">
+        {/* Top Welcome Header: 40px Round Global Picture + "Hello, [Name]" */}
+        <div className="flex items-center justify-between gap-3 px-1">
+          <button
+            type="button"
+            onClick={() => onOpenProfile(user.uid)}
+            className="flex items-center gap-3 min-w-0 text-left cursor-pointer"
+          >
+            <UserAvatar
+              photoURL={displayPhoto}
+              name={displayName}
+              size="40"
+              borderVariant="purple"
+              fallbackVariant="purple"
+            />
+            <div className="min-w-0">
+              <p className="text-base font-extrabold text-white truncate">
+                Hello, {displayName}
+              </p>
+              <p className="text-[11px] text-[#00E67A] font-semibold truncate">
+                Protected • {activePlan} Plan
+              </p>
+            </div>
+          </button>
+        </div>
+
+        {/* Top Safety Score & Streak Card */}
+        <div
+          data-tutorial-target="safety-score-card"
+          className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3"
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <UserAvatar photoURL={user.photoURL} name={user.fullName} size="md" />
+              <UserAvatar
+                photoURL={displayPhoto}
+                name={displayName}
+                size="md"
+                borderVariant="purple"
+                fallbackVariant="purple"
+              />
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-[#00E67A] shrink-0" />
@@ -350,7 +396,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   </h1>
                 </div>
                 <p className="text-xs text-slate-400 truncate">
-                  {user.fullName} • {activePlan} Plan
+                  {displayName} • {activePlan} Plan
                 </p>
               </div>
             </div>
@@ -408,8 +454,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
-          userName={user.fullName}
-          userPhotoURL={user.photoURL}
+          userName={displayName}
+          userPhotoURL={displayPhoto}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           onRefreshLocation={onRefreshLocation}
@@ -419,6 +465,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         {/* Big Red SOS Button */}
         <button
           type="button"
+          data-tutorial-target="sos-button"
           onClick={handleTriggerSos}
           className="w-full min-h-[56px] rounded-2xl bg-[#FF2D55] hover:bg-[#e6254b] text-white font-extrabold text-base shadow-lg shadow-[#FF2D55]/25 flex items-center justify-center gap-2.5 transition-transform active:scale-[0.98] cursor-pointer"
         >
@@ -521,9 +568,17 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                         onClick={() => vid.userId && onOpenProfile(vid.userId)}
                         className="flex items-center gap-2.5 text-left cursor-pointer min-w-0"
                       >
-                        <UserAvatar photoURL={vid.userProfilePic} name={vid.userName} size="sm" />
+                        <UserAvatar
+                          photoURL={vid.userId === user.uid ? displayPhoto : vid.userProfilePic}
+                          name={vid.userId === user.uid ? displayName : vid.userName}
+                          size="sm"
+                          borderVariant={vid.userId === user.uid ? 'purple' : 'green'}
+                          fallbackVariant={vid.userId === user.uid ? 'purple' : 'grey'}
+                        />
                         <div className="min-w-0">
-                          <p className="text-xs font-bold text-white truncate">{vid.userName}</p>
+                          <p className="text-xs font-bold text-white truncate">
+                            {vid.userId === user.uid ? displayName : vid.userName}
+                          </p>
                           <p className="text-[11px] text-slate-400 truncate">
                             {vid.incidentArea || vid.incidentState || vid.incidentAddress}
                           </p>
@@ -643,9 +698,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       <span className="text-xs font-mono font-bold text-slate-400 w-4">
                         #{idx + 1}
                       </span>
-                      <UserAvatar photoURL={u.photoURL} name={u.fullName} size="xs" />
+                      <UserAvatar
+                        photoURL={u.userId === user.uid ? displayPhoto : u.photoURL}
+                        name={u.userId === user.uid ? displayName : u.fullName}
+                        size="xs"
+                        borderVariant={u.userId === user.uid ? 'purple' : 'green'}
+                        fallbackVariant={u.userId === user.uid ? 'purple' : 'grey'}
+                      />
                       <span className="text-xs font-semibold text-white truncate">
-                        {u.fullName}
+                        {u.userId === user.uid ? displayName : u.fullName}
                       </span>
                     </div>
                     <span className="text-xs font-mono font-bold text-[#00E67A] shrink-0">
@@ -678,8 +739,16 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       <span className="text-xs font-mono font-bold text-slate-400 w-4">
                         #{idx + 1}
                       </span>
-                      <UserAvatar photoURL={u.avatar} name={u.name} size="xs" />
-                      <span className="text-xs font-semibold text-white truncate">{u.name}</span>
+                      <UserAvatar
+                        photoURL={u.userId === user.uid ? displayPhoto : u.avatar}
+                        name={u.userId === user.uid ? displayName : u.name}
+                        size="xs"
+                        borderVariant={u.userId === user.uid ? 'purple' : 'green'}
+                        fallbackVariant={u.userId === user.uid ? 'purple' : 'grey'}
+                      />
+                      <span className="text-xs font-semibold text-white truncate">
+                        {u.userId === user.uid ? displayName : u.name}
+                      </span>
                     </div>
                     <span className="text-xs font-mono font-bold text-[#FFC400] shrink-0">
                       {u.verifiedReports} verified
@@ -711,6 +780,26 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               >
                 <X className="w-4 h-4" />
               </button>
+            </div>
+
+            {/* SOS Sender Identity Card: MY Picture + MY Name + MY Phone */}
+            <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-[#050B14] border border-slate-800">
+              <UserAvatar
+                photoURL={displayPhoto}
+                name={displayName}
+                size="md"
+                borderVariant="purple"
+                fallbackVariant="purple"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-[#FF2D55] uppercase tracking-wide">
+                  SOS From
+                </p>
+                <p className="text-sm font-extrabold text-white truncate">{displayName}</p>
+                <p className="text-xs font-mono text-slate-300 truncate">
+                  {user.phone || user.emergencyContact || user.email || 'Phone Verified'}
+                </p>
+              </div>
             </div>
 
             <div className="p-3.5 rounded-2xl bg-[#FF2D55]/15 border border-[#FF2D55]/40">
