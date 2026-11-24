@@ -33,6 +33,29 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
 
+  const cspDirectives = [
+    "default-src 'self' https://*.firebaseapp.com https://*.googleapis.com",
+    "script-src 'self' 'unsafe-inline' https://apis.google.com https://*.firebaseapp.com https://*.googleapis.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' blob: data: https://*.googleapis.com",
+    "frame-src 'self' https://www.google.com https://maps.google.com https://*.firebaseapp.com https://accounts.google.com",
+    "connect-src 'self' https://*.firebaseapp.com https://*.googleapis.com wss://*.googleapis.com https://apis.google.com https://*.gstatic.com https://*.firebaseio.com wss://*.firebaseio.com https://tfhub.dev https://storage.googleapis.com https://www.kaggle.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://overpass-api.de data: blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+  ].join('; ');
+
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Content-Security-Policy', cspDirectives);
+    if (process.env.ENABLE_X_FRAME_DENY === 'true') {
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
+    next();
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, time: new Date().toISOString() });
   });
@@ -76,14 +99,26 @@ async function startServer() {
           addr.quarter ||
           addr.city_district ||
           '';
-        const city =
+        const rawCity =
           addr.city ||
           addr.town ||
           addr.village ||
           addr.municipality ||
           addr.county ||
           '';
-        const state = normalizeNigerianState(addr.state || '');
+        let state = normalizeNigerianState(addr.state || '');
+        let city = rawCity;
+        const inPH = lat >= 4.72 && lat <= 4.92 && lng >= 6.88 && lng <= 7.12;
+        const inRivers = lat >= 4.35 && lat <= 5.22 && lng >= 6.38 && lng <= 7.58;
+        if (inPH) {
+          city = 'Port Harcourt';
+          state = 'Rivers';
+        } else if (inRivers) {
+          state = state || 'Rivers';
+          if (!city || /obio\/?akpor|eleme|oyigbo|ikwerre/i.test(city)) {
+            city = city || 'Port Harcourt';
+          }
+        }
         const displayFirstPart =
           typeof data.display_name === 'string' && data.display_name.trim()
             ? data.display_name.split(',')[0].trim()
@@ -129,12 +164,14 @@ async function startServer() {
       console.error('Nominatim reverse geocode error:', err);
     }
 
+    const inPH = lat >= 4.72 && lat <= 4.92 && lng >= 6.88 && lng <= 7.12;
+    const inRivers = lat >= 4.35 && lat <= 5.22 && lng >= 6.38 && lng <= 7.58;
     const fallback: AddressResult = {
-      formattedAddress: coordFallback,
+      formattedAddress: inPH ? `Port Harcourt, Rivers (${coordFallback})` : coordFallback,
       streetName: coordFallback,
       area: '',
-      city: '',
-      state: '',
+      city: inPH || inRivers ? 'Port Harcourt' : '',
+      state: inPH || inRivers ? 'Rivers' : '',
       landmark: '',
       source: 'unavailable',
     };

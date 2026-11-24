@@ -39,11 +39,17 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'fullName', 'role', 'createdAt']) &&
         data.keys().hasOnly([
-          'uid', 'fullName', 'username', 'phone', 'email', 'city', 'userState',
-          'bio', 'photoURL', 'profilePicUrl', 'emergencyContact', 'role',
-          'safetyScore', 'trust_score', 'streak', 'subscription', 'verifiedBadge',
-          'tutorialSeen', 'followersCount', 'followingCount', 'walletBalance', 'lastStreakDate',
-          'lastActive', 'createdAt'
+          'uid', 'fullName', 'username', 'phone', 'email', 'city', 'state', 'userState',
+          'locationSource', 'locationUpdatedAt', 'locationMigrated', 'lastLat', 'lastLng',
+          'bio', 'photoURL', 'profilePicUrl', 'profilePicUpdatedAt', 'emergencyContact', 'role',
+          'safetyScore', 'trust_score', 'streak', 'subscription', 'subscriptionPlan',
+          'subscriptionStatus', 'subscriptionExpiresAt', 'verifiedBadge',
+          'tutorialSeen', 'followersCount', 'followingCount', 'walletBalance',
+          'availableBalanceNaira', 'totalEarnedNaira', 'guardScore', 'guardScoreMonth',
+          'monthlyBreakdown', 'dailyCheckInDate', 'referralCode', 'referredByCode', 'referredByUid',
+          'falseReportsThisMonth', 'falseReportMonth', 'reportEarnSuspendedUntil',
+          'lastStreakDate', 'lastReportAt', 'flaggedReporter', 'flaggedReportId', 'flaggedReason', 'flaggedAt',
+          'lastActive', 'lastActiveAt', 'createdAt'
         ]) &&
         isValidId(data.uid) &&
         data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
@@ -51,29 +57,50 @@ service cloud.firestore {
         (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
         (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
         (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('state' in data) || (data.state is string && data.state.size() <= 64)) &&
         (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
+        (!('locationSource' in data) || data.locationSource in ['gps', 'manual']) &&
+        (!('locationMigrated' in data) || data.locationMigrated is bool) &&
+        (!('lastLat' in data) || data.lastLat is number) &&
+        (!('lastLng' in data) || data.lastLng is number) &&
         (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
-        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2000)) &&
-        (!('profilePicUrl' in data) || (data.profilePicUrl is string && data.profilePicUrl.size() <= 2000)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2048)) &&
+        (!('profilePicUrl' in data) || (data.profilePicUrl is string && data.profilePicUrl.size() <= 2048)) &&
         (!('emergencyContact' in data) || (data.emergencyContact is string && data.emergencyContact.size() <= 160)) &&
         data.role in ['user', 'admin', 'banned'] &&
         (!('safetyScore' in data) || data.safetyScore is number) &&
         (!('trust_score' in data) || data.trust_score is number) &&
         (!('streak' in data) || data.streak is number) &&
         (!('subscription' in data) || data.subscription in ['free', 'active', 'pending', 'expired']) &&
+        (!('subscriptionPlan' in data) || data.subscriptionPlan in ['FREE', 'MONTHLY_5000', 'YEARLY_35000']) &&
+        (!('subscriptionStatus' in data) || data.subscriptionStatus in ['active', 'expired', 'pending', 'free']) &&
         (!('verifiedBadge' in data) || data.verifiedBadge is bool) &&
         (!('tutorialSeen' in data) || data.tutorialSeen is bool) &&
         (!('followersCount' in data) || data.followersCount is number) &&
         (!('followingCount' in data) || data.followingCount is number) &&
         (!('walletBalance' in data) || data.walletBalance is number) &&
-        (!('lastStreakDate' in data) || (data.lastStreakDate is string && data.lastStreakDate.size() <= 20));
+        (!('availableBalanceNaira' in data) || data.availableBalanceNaira is number) &&
+        (!('totalEarnedNaira' in data) || data.totalEarnedNaira is number) &&
+        (!('guardScore' in data) || data.guardScore is number) &&
+        (!('guardScoreMonth' in data) || (data.guardScoreMonth is string && data.guardScoreMonth.size() <= 10)) &&
+        (!('monthlyBreakdown' in data) || data.monthlyBreakdown is map) &&
+        (!('dailyCheckInDate' in data) || (data.dailyCheckInDate is string && data.dailyCheckInDate.size() <= 20)) &&
+        (!('referralCode' in data) || (data.referralCode is string && data.referralCode.size() <= 32)) &&
+        (!('referredByCode' in data) || (data.referredByCode is string && data.referredByCode.size() <= 32)) &&
+        (!('referredByUid' in data) || (data.referredByUid is string && data.referredByUid.size() <= 128)) &&
+        (!('falseReportsThisMonth' in data) || data.falseReportsThisMonth is number) &&
+        (!('falseReportMonth' in data) || (data.falseReportMonth is string && data.falseReportMonth.size() <= 10)) &&
+        (!('lastStreakDate' in data) || (data.lastStreakDate is string && data.lastStreakDate.size() <= 20)) &&
+        (!('flaggedReporter' in data) || data.flaggedReporter is bool) &&
+        (!('flaggedReportId' in data) || (data.flaggedReportId is string && data.flaggedReportId.size() <= 128)) &&
+        (!('flaggedReason' in data) || (data.flaggedReason is string && data.flaggedReason.size() <= 250));
     }
 
     function isValidPublicProfile(data) {
       return data.keys().hasAll(['userId', 'fullName']) &&
         data.keys().hasOnly([
-          'userId', 'fullName', 'username', 'bio', 'city', 'userState',
-          'photoURL', 'verifiedBadge', 'trust_score', 'safetyScore', 'streak',
+          'userId', 'fullName', 'username', 'bio', 'city', 'state', 'userState',
+          'photoURL', 'profilePicUrl', 'verifiedBadge', 'trust_score', 'safetyScore', 'streak',
           'followersCount', 'followingCount', 'totalReports', 'verifiedReports',
           'totalScans', 'joinedAt'
         ]) &&
@@ -82,8 +109,10 @@ service cloud.firestore {
         (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
         (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
         (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('state' in data) || (data.state is string && data.state.size() <= 64)) &&
         (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
-        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2000));
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2048)) &&
+        (!('profilePicUrl' in data) || (data.profilePicUrl is string && data.profilePicUrl.size() <= 2048));
     }
 
     function isValidFamilyMember(data) {
@@ -97,7 +126,7 @@ service cloud.firestore {
         data.memberPhone is string && data.memberPhone.size() >= 5 && data.memberPhone.size() <= 32 &&
         data.relationship is string && data.relationship.size() >= 1 && data.relationship.size() <= 48 &&
         data.status in ['Safe', 'SOS'] &&
-        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2000)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2048)) &&
         (!('lastAddress' in data) || (data.lastAddress is string && data.lastAddress.size() <= 250)) &&
         (!('lastLat' in data) || data.lastLat is number) &&
         (!('lastLng' in data) || data.lastLng is number) &&
@@ -122,16 +151,47 @@ service cloud.firestore {
         (!('confidence' in data) || data.confidence is number);
     }
 
+    function isValidAlert(data) {
+      return data.keys().hasAll(['type', 'address', 'status', 'verifiedByGuardAI', 'createdAt']) &&
+        data.keys().hasOnly([
+          'userId', 'userName', 'userProfilePic', 'type', 'title', 'description', 'address',
+          'incidentState', 'incidentArea', 'lat', 'lng', 'confidence',
+          'status', 'videoUrl', 'photoUrl', 'verifiedByGuardAI',
+          'reportId', 'falseCount', 'falseBy', 'isHidden', 'createdAt'
+        ]) &&
+        data.type is string && data.type.size() >= 1 && data.type.size() <= 40 &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 250 &&
+        data.status in ['New', 'Seen', 'Resolved'] &&
+        data.verifiedByGuardAI is bool &&
+        (!('userId' in data) || (data.userId is string && data.userId.size() <= 128)) &&
+        (!('userName' in data) || (data.userName is string && data.userName.size() <= 120)) &&
+        (!('userProfilePic' in data) || (data.userProfilePic is string && data.userProfilePic.size() <= 2048)) &&
+        (!('title' in data) || (data.title is string && data.title.size() <= 160)) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1500)) &&
+        (!('incidentState' in data) || (data.incidentState is string && data.incidentState.size() <= 64)) &&
+        (!('incidentArea' in data) || (data.incidentArea is string && data.incidentArea.size() <= 120)) &&
+        (!('lat' in data) || data.lat is number) &&
+        (!('lng' in data) || data.lng is number) &&
+        (!('confidence' in data) || data.confidence is number) &&
+        (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 800000)) &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500000)) &&
+        (!('reportId' in data) || (data.reportId is string && data.reportId.size() <= 128)) &&
+        (!('falseCount' in data) || (data.falseCount is number && data.falseCount >= 0)) &&
+        (!('falseBy' in data) || (data.falseBy is list && data.falseBy.size() <= 100 && (data.falseBy.size() == 0 || data.falseBy[0] is string))) &&
+        (!('isHidden' in data) || data.isHidden is bool);
+    }
+
     function isValidIncidentReport(data) {
       return data.keys().hasAll(['userId', 'incidentType', 'incidentAddress', 'status', 'createdAt']) &&
         data.keys().hasOnly([
-          'reportId', 'userId', 'userName', 'userPhone', 'userState',
+          'reportId', 'userId', 'userName', 'userPhone', 'userState', 'userProfilePic',
           'incidentState', 'incidentArea', 'incidentAddress', 'incidentType',
           'description', 'videoUrl', 'videoDurationSec', 'photoUrl', 'gpsLat', 'gpsLng',
           'videoAuthScore', 'audioMatchScore', 'locationConsistencyScore',
           'crossReportScore', 'guardAiScore', 'aiVerdict', 'status',
           'adminDecision', 'adminName', 'adminReason', 'approvedAt',
-          'paymentStatus', 'forwardedTo', 'forwardedAt', 'forwardedState', 'createdAt'
+          'paymentStatus', 'forwardedTo', 'forwardedAt', 'forwardedState',
+          'visibleOnMap', 'device', 'falseCount', 'falseBy', 'isHidden', 'createdAt'
         ]) &&
         isValidId(data.userId) &&
         data.incidentType is string && data.incidentType.size() >= 1 && data.incidentType.size() <= 40 &&
@@ -143,15 +203,36 @@ service cloud.firestore {
         (!('userName' in data) || (data.userName is string && data.userName.size() <= 120)) &&
         (!('userPhone' in data) || (data.userPhone is string && data.userPhone.size() <= 32)) &&
         (!('userState' in data) || (data.userState is string && data.userState.size() <= 64)) &&
+        (!('userProfilePic' in data) || (data.userProfilePic is string && data.userProfilePic.size() <= 2048)) &&
         (!('incidentState' in data) || (data.incidentState is string && data.incidentState.size() <= 64)) &&
-        (!('incidentArea' in data) || (data.incidentArea is string && data.incidentArea.size() <= 120));
+        (!('incidentArea' in data) || (data.incidentArea is string && data.incidentArea.size() <= 120)) &&
+        (!('visibleOnMap' in data) || data.visibleOnMap is bool) &&
+        (!('device' in data) || (data.device is string && data.device.size() >= 2 && data.device.size() <= 250)) &&
+        (!('falseCount' in data) || (data.falseCount is number && data.falseCount >= 0)) &&
+        (!('falseBy' in data) || (data.falseBy is list && data.falseBy.size() <= 100)) &&
+        (!('isHidden' in data) || data.isHidden is bool);
+    }
+
+    function canCreateIncidentReportWithAntiSpam() {
+      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return incoming().incidentType == 'SOS Emergency' || (
+        userData.role != 'banned' &&
+        ('createdAt' in userData) &&
+        userData.createdAt is timestamp &&
+        userData.createdAt + duration.value(24, 'h') <= request.time &&
+        (
+          !('lastReportAt' in userData) ||
+          userData.lastReportAt + duration.value(30, 'm') <= request.time
+        ) &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.lastReportAt == request.time
+      );
     }
 
     function isValidSubscription(data) {
       return data.keys().hasAll(['userId', 'plan', 'status', 'amount', 'createdAt']) &&
         data.keys().hasOnly(['userId', 'plan', 'status', 'amount', 'createdAt', 'expiresAt']) &&
         isValidId(data.userId) &&
-        data.plan in ['Free', 'Monthly', 'Yearly'] &&
+        data.plan in ['Free', 'Monthly', 'Yearly', 'FREE', 'MONTHLY_5000', 'YEARLY_35000'] &&
         data.status in ['active', 'pending', 'expired', 'rejected'] &&
         data.amount is number && data.amount in [0, 5000, 35000];
     }
@@ -181,17 +262,62 @@ service cloud.firestore {
     function isValidUsageStats(data) {
       return data.keys().hasAll(['userId', 'name', 'totalScans', 'verifiedReports', 'totalPoints', 'month']) &&
         data.keys().hasOnly([
-          'userId', 'name', 'avatar', 'totalScans', 'totalReports', 'verifiedReports',
+          'userId', 'name', 'avatar', 'profilePicUrl', 'city', 'state',
+          'subscriptionPlan', 'subscriptionStatus', 'subscriptionExpiresAt',
+          'totalScans', 'totalReports', 'verifiedReports',
           'totalUsageDays', 'lastActiveDate', 'totalUsageMinutes', 'totalPoints',
-          'month', 'cheatingFlagged', 'lastActive'
+          'guardScore', 'monthlyBreakdown', 'scoreHistory',
+          'month', 'cheatingFlagged', 'lastActive', 'lastActiveAt'
         ]) &&
         isValidId(data.userId) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
-        (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2000)) &&
+        (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2048)) &&
+        (!('profilePicUrl' in data) || (data.profilePicUrl is string && data.profilePicUrl.size() <= 2048)) &&
+        (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('state' in data) || (data.state is string && data.state.size() <= 64)) &&
+        (!('subscriptionPlan' in data) || data.subscriptionPlan in ['FREE', 'MONTHLY_5000', 'YEARLY_35000']) &&
+        (!('subscriptionStatus' in data) || data.subscriptionStatus in ['active', 'expired', 'pending', 'free']) &&
         data.totalScans is number && data.totalScans >= 0 &&
         data.verifiedReports is number && data.verifiedReports >= 0 &&
-        data.totalPoints is number && data.totalPoints >= 0 &&
+        data.totalPoints is number &&
+        (!('guardScore' in data) || (data.guardScore is number && data.guardScore >= 0)) &&
+        (!('monthlyBreakdown' in data) || data.monthlyBreakdown is map) &&
+        (!('scoreHistory' in data) || (data.scoreHistory is list && data.scoreHistory.size() <= 100)) &&
         data.month is string && data.month.size() == 7;
+    }
+
+    function isValidReportAuditLog(data) {
+      return data.keys().hasAll(['reportId', 'userId', 'device', 'status', 'action', 'timestamp']) &&
+        data.keys().hasOnly(['reportId', 'userId', 'incidentType', 'device', 'status', 'action', 'timestamp']) &&
+        isValidId(data.userId) &&
+        data.reportId is string && data.reportId.size() >= 1 && data.reportId.size() <= 128 &&
+        data.device is string && data.device.size() >= 2 && data.device.size() <= 250 &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 64 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 64 &&
+        (!('incidentType' in data) || (data.incidentType is string && data.incidentType.size() <= 40));
+    }
+
+    function isValidFalseVote(data) {
+      return data.keys().hasAll(['alertId', 'voterId', 'createdAt']) &&
+        data.keys().hasOnly(['alertId', 'reportId', 'voterId', 'reporterId', 'createdAt']) &&
+        isValidId(data.alertId) &&
+        isValidId(data.voterId) &&
+        (!('reportId' in data) || (data.reportId is string && data.reportId.size() <= 128)) &&
+        (!('reporterId' in data) || (data.reporterId is string && data.reporterId.size() <= 128));
+    }
+
+    function isValidReferral(data) {
+      return data.keys().hasAll(['referredUid', 'referrerCode', 'status', 'rewardPaid', 'rewardAmount', 'createdAt']) &&
+        data.keys().hasOnly([
+          'referredUid', 'referredName', 'referrerUid', 'referrerCode',
+          'status', 'subscriptionStatus', 'subscribedPlan',
+          'rewardPaid', 'rewardAmount', 'rewardNote', 'createdAt', 'subscribedAt'
+        ]) &&
+        isValidId(data.referredUid) &&
+        data.referrerCode is string && data.referrerCode.size() >= 2 && data.referrerCode.size() <= 32 &&
+        data.status in ['PENDING', 'SUBSCRIBED', 'Reward Paid'] &&
+        data.rewardPaid is bool &&
+        data.rewardAmount is number && data.rewardAmount >= 0;
     }
 
     // COLLECTION: users (Private PII isolated to owner & admin)
@@ -201,7 +327,12 @@ service cloud.firestore {
       allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming()) &&
         incoming().uid == userId && incoming().role == 'user' &&
         (!('subscription' in incoming()) || incoming().subscription == 'free') &&
+        (!('subscriptionPlan' in incoming()) || incoming().subscriptionPlan == 'FREE') &&
+        (!('subscriptionStatus' in incoming()) || incoming().subscriptionStatus == 'free') &&
         (!('walletBalance' in incoming()) || incoming().walletBalance == 0) &&
+        (!('availableBalanceNaira' in incoming()) || incoming().availableBalanceNaira == 0) &&
+        (!('totalEarnedNaira' in incoming()) || incoming().totalEarnedNaira == 0) &&
+        (!('flaggedReporter' in incoming()) || incoming().flaggedReporter == false) &&
         incoming().createdAt == request.time;
       allow update: if isValidId(userId) && isValidUser(incoming()) && (
         isAdmin() ||
@@ -210,12 +341,42 @@ service cloud.firestore {
           incoming().uid == existing().uid &&
           incoming().role == existing().role &&
           incoming().createdAt == existing().createdAt &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'fullName', 'username', 'phone', 'city', 'userState', 'bio',
-            'photoURL', 'profilePicUrl', 'emergencyContact', 'safetyScore',
-            'trust_score', 'streak', 'lastStreakDate', 'lastActive',
-            'followersCount', 'followingCount', 'tutorialSeen'
-          ])
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'username', 'phone', 'city', 'state', 'userState',
+              'locationSource', 'locationUpdatedAt', 'locationMigrated', 'lastLat', 'lastLng',
+              'bio', 'photoURL', 'profilePicUrl', 'profilePicUpdatedAt', 'emergencyContact',
+              'safetyScore', 'trust_score', 'streak', 'lastStreakDate', 'lastActive', 'lastActiveAt',
+              'followersCount', 'followingCount', 'tutorialSeen', 'referralCode',
+              'dailyCheckInDate', 'monthlyBreakdown', 'guardScore', 'guardScoreMonth'
+            ]) ||
+            (
+              incoming().diff(existing()).affectedKeys().hasOnly(['subscription', 'subscriptionStatus']) &&
+              incoming().subscription == 'expired' &&
+              incoming().subscriptionStatus == 'expired' &&
+              ('subscriptionExpiresAt' in existing()) &&
+              existing().subscriptionExpiresAt < request.time
+            ) ||
+            (
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastReportAt']) &&
+              incoming().lastReportAt == request.time &&
+              (!('lastReportAt' in existing()) || existing().lastReportAt + duration.value(30, 'm') <= request.time)
+            )
+          )
+        ) ||
+        (
+          isSignedIn() &&
+          incoming().uid == existing().uid &&
+          incoming().role == existing().role &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['flaggedReporter', 'flaggedReportId', 'flaggedAt']) &&
+          incoming().flaggedReporter == true &&
+          incoming().flaggedAt == request.time &&
+          incoming().flaggedReportId is string &&
+          isValidId(incoming().flaggedReportId) &&
+          getAfter(/databases/$(database)/documents/alerts/$(incoming().flaggedReportId)).data.userId == userId &&
+          getAfter(/databases/$(database)/documents/alerts/$(incoming().flaggedReportId)).data.falseCount >= 3 &&
+          getAfter(/databases/$(database)/documents/alerts/$(incoming().flaggedReportId)).data.isHidden == true
         )
       );
       allow delete: if isAdmin();
@@ -232,8 +393,9 @@ service cloud.firestore {
           isOwner(userId) &&
           incoming().userId == existing().userId &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'fullName', 'username', 'bio', 'city', 'userState', 'photoURL',
-            'trust_score', 'safetyScore', 'streak', 'totalReports', 'totalScans'
+            'fullName', 'username', 'bio', 'city', 'state', 'userState',
+            'photoURL', 'profilePicUrl', 'trust_score', 'safetyScore', 'streak',
+            'totalReports', 'totalScans'
           ])
         ) ||
         (
@@ -298,14 +460,43 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // COLLECTION: alerts (Only Admin can publish verified alerts to Alert tab)
+    // COLLECTION: alerts (Only Admin can publish verified alerts; 3 community False flags auto-hide)
     match /alerts/{alertId} {
       allow get: if isValidId(alertId) && isSignedIn() && (existing().verifiedByGuardAI == true || isAdmin());
       allow list: if isSignedIn() && (existing().verifiedByGuardAI == true || isAdmin());
-      allow create: if isValidId(alertId) && isAdmin() && incoming().createdAt == request.time;
-      allow update: if isValidId(alertId) && (
+      allow create: if isValidId(alertId) && isAdmin() && isValidAlert(incoming()) && incoming().createdAt == request.time;
+      allow update: if isValidId(alertId) && isValidAlert(incoming()) && (
         isAdmin() ||
-        (isSignedIn() && existing().verifiedByGuardAI == true && incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status in ['Seen', 'Resolved'])
+        (
+          isSignedIn() &&
+          existing().verifiedByGuardAI == true &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+          incoming().status in ['Seen', 'Resolved']
+        ) ||
+        (
+          isSignedIn() &&
+          existing().verifiedByGuardAI == true &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'falseCount', 'falseBy', 'isHidden', 'verifiedByGuardAI', 'status'
+          ]) &&
+          incoming().falseBy is list &&
+          incoming().falseBy.size() <= 100 &&
+          (
+            !('falseBy' in existing())
+              ? (incoming().falseBy.size() == 1 && request.auth.uid in incoming().falseBy)
+              : (
+                  !(request.auth.uid in existing().falseBy) &&
+                  incoming().falseBy.size() == existing().falseBy.size() + 1 &&
+                  incoming().falseBy.hasAll(existing().falseBy) &&
+                  request.auth.uid in incoming().falseBy
+                )
+          ) &&
+          incoming().falseCount == incoming().falseBy.size() &&
+          (
+            (incoming().falseCount >= 3 && incoming().isHidden == true && incoming().verifiedByGuardAI == false && incoming().status == 'Resolved') ||
+            (incoming().falseCount < 3 && incoming().isHidden == false && incoming().verifiedByGuardAI == true && incoming().status == existing().status)
+          )
+        )
       );
       allow delete: if isAdmin();
     }
@@ -318,8 +509,8 @@ service cloud.firestore {
         incoming().userId == request.auth.uid &&
         incoming().createdAt == request.time &&
         (
-          (incoming().plan == 'Free' && incoming().status == 'active' && incoming().amount == 0) ||
-          (incoming().plan in ['Monthly', 'Yearly'] && incoming().status == 'pending')
+          (incoming().plan in ['Free', 'FREE'] && incoming().status == 'active' && incoming().amount == 0) ||
+          (incoming().plan in ['Monthly', 'Yearly', 'MONTHLY_5000', 'YEARLY_35000'] && incoming().status == 'pending')
         );
       allow update, delete: if isAdmin();
     }
@@ -334,16 +525,45 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // COLLECTION: incident_reports
+    // COLLECTION: incident_reports (24h account age, 30m rate limit, pending-until-admin, device audit)
     match /incident_reports/{reportId} {
       allow get: if isValidId(reportId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
-      allow create: if isValidId(reportId) && isSignedIn() && isValidIncidentReport(incoming()) &&
+      allow create: if isValidId(reportId) &&
+        isSignedIn() &&
+        isValidIncidentReport(incoming()) &&
         incoming().userId == request.auth.uid &&
-        incoming().status == 'PENDING VERIFICATION' &&
+        incoming().status in ['pending', 'PENDING VERIFICATION'] &&
+        incoming().adminDecision == 'pending' &&
+        (!('visibleOnMap' in incoming()) || incoming().visibleOnMap == false) &&
+        (!('falseCount' in incoming()) || incoming().falseCount == 0) &&
+        (!('isHidden' in incoming()) || incoming().isHidden == false) &&
         (!('paymentStatus' in incoming()) || incoming().paymentStatus == 'unpaid') &&
+        ('device' in incoming()) &&
+        incoming().createdAt == request.time &&
+        canCreateIncidentReportWithAntiSpam();
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: report_false_votes
+    match /report_false_votes/{voteId} {
+      allow get: if isValidId(voteId) && isSignedIn() && (existing().voterId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().voterId == request.auth.uid || isAdmin());
+      allow create: if isValidId(voteId) && isSignedIn() && isValidFalseVote(incoming()) &&
+        incoming().voterId == request.auth.uid &&
+        voteId == (incoming().alertId + '_' + request.auth.uid) &&
         incoming().createdAt == request.time;
       allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: report_audit_logs (Immutable audit log with userId, device, timestamp)
+    match /report_audit_logs/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(logId) && isSignedIn() && isValidReportAuditLog(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().timestamp == request.time;
+      allow update, delete: if false;
     }
 
     // COLLECTION: police_stations (ADMIN ONLY — NEVER READABLE BY USERS)
@@ -361,24 +581,27 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // COLLECTION: home_videos (Verified + Paid ₦5,000 only)
+    // COLLECTION: home_videos (Verified reports only)
     match /home_videos/{videoId} {
       allow get: if isValidId(videoId) && isSignedIn();
       allow list: if isSignedIn();
       allow create, delete: if isAdmin();
       allow update: if isValidId(videoId) && (
         isAdmin() ||
-        (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['likes', 'likedBy', 'views']))
+        (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['likes', 'likedBy', 'views']) &&
+         (!('likedBy' in incoming()) || (incoming().likedBy is list && incoming().likedBy.size() <= 5000)))
       );
     }
 
-    // COLLECTION: user_usage_stats (Real monthly leaderboard)
+    // COLLECTION: user_usage_stats (Real monthly Guard Score & Top 10 Guardians)
     match /user_usage_stats/{statId} {
       allow get: if isValidId(statId) && isSignedIn();
       allow list: if isSignedIn();
       allow create: if isValidId(statId) && isSignedIn() && isValidUsageStats(incoming()) &&
         incoming().userId == request.auth.uid &&
         incoming().verifiedReports == 0 &&
+        (!('subscriptionStatus' in incoming()) || incoming().subscriptionStatus == 'free') &&
+        (!('subscriptionPlan' in incoming()) || incoming().subscriptionPlan == 'FREE') &&
         (!('cheatingFlagged' in incoming()) || incoming().cheatingFlagged == false);
       allow update: if isValidId(statId) && isValidUsageStats(incoming()) && (
         isAdmin() ||
@@ -388,13 +611,53 @@ service cloud.firestore {
           incoming().userId == existing().userId &&
           incoming().verifiedReports == existing().verifiedReports &&
           (!('cheatingFlagged' in incoming()) || incoming().cheatingFlagged == existing().cheatingFlagged) &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'avatar', 'totalScans', 'totalReports', 'totalUsageDays',
-            'lastActiveDate', 'totalUsageMinutes', 'totalPoints', 'lastActive'
-          ])
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'avatar', 'profilePicUrl', 'city', 'state',
+              'totalScans', 'totalReports', 'totalUsageDays',
+              'lastActiveDate', 'totalUsageMinutes', 'totalPoints',
+              'guardScore', 'monthlyBreakdown', 'scoreHistory', 'lastActive', 'lastActiveAt'
+            ]) ||
+            (
+              incoming().diff(existing()).affectedKeys().hasOnly(['subscriptionStatus']) &&
+              incoming().subscriptionStatus == 'expired' &&
+              ('subscriptionExpiresAt' in existing()) &&
+              existing().subscriptionExpiresAt < request.time
+            )
+          )
         )
       );
       allow delete: if isAdmin();
+    }
+
+    // COLLECTION: referrals
+    match /referrals/{referralId} {
+      allow get: if isValidId(referralId) && isSignedIn() && (existing().referredUid == request.auth.uid || existing().referrerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().referredUid == request.auth.uid || existing().referrerUid == request.auth.uid || isAdmin());
+      allow create: if isValidId(referralId) && isSignedIn() && isValidReferral(incoming()) &&
+        incoming().referredUid == request.auth.uid &&
+        referralId == request.auth.uid &&
+        incoming().status == 'PENDING' &&
+        incoming().rewardPaid == false &&
+        incoming().rewardAmount == 0 &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: referral_codes (Non-PII lookup table for invite codes)
+    match /referral_codes/{code} {
+      allow get: if isValidId(code) && isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isValidId(code) && isSignedIn() &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().code == code;
+      allow update, delete: if isAdmin();
+    }
+
+    // COLLECTION: leaderboardHistory
+    match /leaderboardHistory/{historyId} {
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if isAdmin();
     }
 
     // COLLECTION: guard_users_live

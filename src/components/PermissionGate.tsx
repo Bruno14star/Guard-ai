@@ -1,39 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { MapPin, Mic, ShieldCheck, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db } from '../firebase';
 import { reverseGeocodeHuman } from '../utils/geoPhysics';
+
+export interface InitialGpsPayload {
+  lat: number;
+  lng: number;
+  accuracy: number;
+  address: string;
+  streetName: string;
+  area: string;
+  city: string;
+  state: string;
+  landmark: string;
+}
 
 interface PermissionGateProps {
   uid: string;
-  onComplete: (initialGps: {
-    lat: number;
-    lng: number;
-    accuracy: number;
-    address: string;
-    streetName: string;
-    area: string;
-    city: string;
-    state: string;
-    landmark: string;
-  }) => void;
+  onComplete: (initialGps: InitialGpsPayload | null) => void;
 }
 
 export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete }) => {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [locError, setLocError] = useState<string | null>(null);
   const [locLoading, setLocLoading] = useState(false);
-  const [gpsData, setGpsData] = useState<{
-    lat: number;
-    lng: number;
-    accuracy: number;
-    address: string;
-    streetName: string;
-    area: string;
-    city: string;
-    state: string;
-    landmark: string;
-  } | null>(null);
+  const [locSkipped, setLocSkipped] = useState(false);
+  const [gpsData, setGpsData] = useState<InitialGpsPayload | null>(null);
 
   const [micError, setMicError] = useState<string | null>(null);
   const [micLoading, setMicLoading] = useState(false);
@@ -61,12 +54,12 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
 
   const requestLocation = () => {
     setLocError(null);
+    setLocSkipped(false);
     if (!navigator.geolocation) {
-      setLocError('GPS not available on this device.');
+      setLocError('Location Not Set — GPS not available on this device.');
       return;
     }
 
-    // Clean any prior pending attempt
     if (gpsWatchRef.current !== null) {
       navigator.geolocation.clearWatch(gpsWatchRef.current);
       gpsWatchRef.current = null;
@@ -113,9 +106,9 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
           ),
         ]);
       } catch {
-        // Keep Lat, Lng fallback if Nominatim fails
+        // Keep coordinate/PH hint fallback
       } finally {
-        setGpsData({
+        const resolvedGps: InitialGpsPayload = {
           lat: latitude,
           lng: longitude,
           accuracy: Math.round(accuracy || 25),
@@ -125,7 +118,47 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
           city: geo.city,
           state: geo.state,
           landmark: geo.landmark,
-        });
+        };
+        setGpsData(resolvedGps);
+
+        // Save GPS city/state/coordinates to Firestore (never default to Lagos)
+        if (geo.city || geo.state) {
+          updateDoc(doc(db, 'users', uid), {
+            city: geo.city,
+            state: geo.state,
+            userState: geo.state,
+            locationSource: 'gps',
+            locationUpdatedAt: serverTimestamp(),
+            lastLat: latitude,
+            lastLng: longitude,
+          }).catch(() => {});
+
+          updateDoc(doc(db, 'public_profiles', uid), {
+            city: geo.city,
+            state: geo.state,
+            userState: geo.state,
+          }).catch(() => {});
+
+          setDoc(
+            doc(db, 'me_profiles', uid),
+            {
+              userId: uid,
+              city: geo.city,
+              state: geo.state,
+              userState: geo.state,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          ).catch(() => {});
+        } else {
+          updateDoc(doc(db, 'users', uid), {
+            lastLat: latitude,
+            lastLng: longitude,
+            locationSource: 'gps',
+            locationUpdatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+
         setLocLoading(false);
         setStep(2);
       }
@@ -137,13 +170,12 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
       cleanupGps();
       setLocLoading(false);
       if (err && err.code === err.PERMISSION_DENIED) {
-        setLocError('Location denied. Please allow Location access in browser settings and tap Try Again.');
+        setLocError('Location Not Set — GPS access denied. Allow Location access and tap Set My Location.');
       } else {
-        setLocError('GPS signal timed out. Please turn on device Location / GPS and tap Try Again.');
+        setLocError('Location Not Set — GPS unavailable right now. Turn on GPS and tap Set My Location.');
       }
     };
 
-    // Tier 2 fallback (fast Wi-Fi / cell / cached GPS within 60s)
     const runFastFallback = () => {
       if (settled) return;
       gpsTimerRef.current = window.setTimeout(() => handleFinalFailure(), 7000);
@@ -154,12 +186,10 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
       );
     };
 
-    // Hard JS timeout for Tier 1 high-accuracy (some mobile browsers hang ignoring native timeout)
     gpsTimerRef.current = window.setTimeout(() => {
       if (!settled) runFastFallback();
     }, 6500);
 
-    // Race watchPosition + getCurrentPosition for fastest real GPS fix
     gpsWatchRef.current = navigator.geolocation.watchPosition(
       handlePosition,
       (err) => {
@@ -221,8 +251,8 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
       setMicGranted(true);
       setMicLoading(false);
 
-      if (gpsData) {
-        const syncPerms = async () => {
+      const syncPerms = async () => {
+        if (gpsData) {
           try {
             await setDoc(
               doc(db, 'guard_users_live', uid),
@@ -231,6 +261,7 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
                 lat: gpsData.lat,
                 lng: gpsData.lng,
                 accuracy: gpsData.accuracy,
+                address: gpsData.address,
                 locationEnabled: true,
                 micEnabled: true,
                 lastUpdated: serverTimestamp(),
@@ -238,26 +269,26 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
               },
               { merge: true }
             );
-          } catch (err) {
-            console.warn('Non-blocking guard_users_live sync:', err);
+          } catch {
+            // non-blocking
           }
-          try {
-            await setDoc(
-              doc(db, 'user_permissions', uid),
-              {
-                userId: uid,
-                locationGranted: true,
-                micGranted: true,
-                timestamp: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          } catch (err) {
-            console.warn('Non-blocking user_permissions sync:', err);
-          }
-        };
-        void syncPerms();
-      }
+        }
+        try {
+          await setDoc(
+            doc(db, 'user_permissions', uid),
+            {
+              userId: uid,
+              locationGranted: Boolean(gpsData),
+              micGranted: true,
+              timestamp: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch {
+          // non-blocking
+        }
+      };
+      void syncPerms();
 
       window.setTimeout(() => {
         setStep(3);
@@ -272,15 +303,17 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     audioCtxRef.current?.close().catch(() => {});
-    if (gpsData) {
-      onComplete(gpsData);
+    try {
+      window.sessionStorage.setItem('guard_perm_completed', '1');
+    } catch {
+      // ignore
     }
+    onComplete(gpsData);
   };
 
   return (
     <div className="min-h-screen bg-[#050B14] flex items-center justify-center p-5">
       <div className="w-full max-w-md bg-[#0C1626] border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
-        {/* Step Progress */}
         <div className="flex items-center justify-between text-xs font-semibold text-slate-400">
           <span>Security Setup</span>
           <span className="font-mono text-[#2E9BFF]">Step {step} of 3</span>
@@ -297,9 +330,11 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
               <MapPin className="w-8 h-8" />
             </div>
             <div className="space-y-2">
-              <h2 className="text-2xl font-bold text-white">Enable Location</h2>
+              <h2 className="text-xl font-bold text-white">
+                Allow Guard AI to use your exact location?
+              </h2>
               <p className="text-sm text-slate-400">
-                Guard AI needs your live location to warn you about danger near you and to show you on the map.
+                Guard AI uses your device GPS to show your real city &amp; street on the map and warn you about nearby danger. We never guess your city from IP.
               </p>
             </div>
             {locError && (
@@ -314,8 +349,24 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
               disabled={locLoading}
               className="w-full min-h-[48px] py-3.5 px-5 rounded-xl bg-[#2E9BFF] hover:bg-[#1e88eb] text-white font-bold text-sm transition-colors cursor-pointer disabled:opacity-60"
             >
-              {locLoading ? 'Getting Real GPS...' : locError ? 'Try Again' : 'Enable Location'}
+              {locLoading
+                ? 'Getting Real GPS...'
+                : locError
+                ? 'Set My Location'
+                : 'Allow Exact Location'}
             </button>
+            {locError && (
+              <button
+                type="button"
+                onClick={() => {
+                  setLocSkipped(true);
+                  setStep(2);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs cursor-pointer"
+              >
+                Continue as Location Not Set
+              </button>
+            )}
           </div>
         )}
 
@@ -366,26 +417,39 @@ export const PermissionGate: React.FC<PermissionGateProps> = ({ uid, onComplete 
           </div>
         )}
 
-        {step === 3 && gpsData && (
+        {step === 3 && (
           <div className="space-y-5 text-center">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[#00E67A]/15 border border-[#00E67A]/40 flex items-center justify-center text-[#00E67A]">
               <ShieldCheck className="w-8 h-8" />
             </div>
             <div className="space-y-2">
               <h2 className="text-2xl font-bold text-white">You Are Protected</h2>
-              <p className="text-sm text-slate-300">
-                GPS: <span className="text-[#00E67A] font-semibold">ON</span> •{' '}
-                {gpsData.streetName}, {gpsData.city} • Mic:{' '}
-                <span className="text-[#00E67A] font-semibold">ON</span>
-              </p>
-              <p className="text-xs font-mono text-slate-400">
-                Lat: {gpsData.lat.toFixed(5)} • Lng: {gpsData.lng.toFixed(5)} • ±{gpsData.accuracy}m
-              </p>
+              {gpsData ? (
+                <>
+                  <p className="text-sm text-slate-300">
+                    GPS: <span className="text-[#00E67A] font-semibold">ON</span> •{' '}
+                    {gpsData.city ? `${gpsData.city}, ${gpsData.state}` : gpsData.streetName} • Mic:{' '}
+                    <span className="text-[#00E67A] font-semibold">ON</span>
+                  </p>
+                  <p className="text-xs font-mono text-slate-400">
+                    Lat: {gpsData.lat.toFixed(5)} • Lng: {gpsData.lng.toFixed(5)} • ±{gpsData.accuracy}m
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-[#FFC400]">
+                  Location: <span className="font-bold">{locSkipped ? 'Location Not Set' : 'Location Not Set'}</span> • Mic:{' '}
+                  <span className="text-[#00E67A] font-semibold">ON</span>
+                </p>
+              )}
             </div>
 
             <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800 flex items-center gap-2.5 text-left text-xs text-slate-300">
               <CheckCircle2 className="w-4 h-4 text-[#00E67A] shrink-0" />
-              <span>Real GPS &amp; Microphone verified and synced to Guard AI.</span>
+              <span>
+                {gpsData
+                  ? 'Real GPS & Microphone verified and synced to Guard AI.'
+                  : 'You can tap "Set My Location" anytime on Home or Profile.'}
+              </span>
             </div>
 
             <button

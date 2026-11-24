@@ -11,6 +11,7 @@ import { Building2, Plus, Navigation, ShieldCheck, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { HumanLocation, SafeBusiness, UserProfile } from '../types';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
+import { awardGuardScoreEvent } from '../utils/guardScore';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
 import { AdBanner } from './AdBanner';
@@ -37,7 +38,8 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
   onRefreshLocation,
   onOpenReportModal,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const resolvedPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, resolvedPhoto);
   const [verifiedBusinesses, setVerifiedBusinesses] = useState<SafeBusiness[]>([]);
   const [myPending, setMyPending] = useState<SafeBusiness[]>([]);
   const [filterType, setFilterType] = useState<string>('All');
@@ -88,6 +90,18 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
     (b) => filterType === 'All' || b.type === filterType
   );
 
+  const handleRouteToBusiness = (lat: number, lng: number) => {
+    setRouteDest({ lat, lng });
+    void awardGuardScoreEvent({
+      uid: user.uid,
+      action: 'safe_route',
+      userName: globalProfile.name || user.fullName,
+      userAvatar: globalProfile.photo || resolvedPhoto,
+      city: location?.city || user.city || '',
+      state: location?.state || user.state || user.userState || '',
+    });
+  };
+
   const pins: MapPinItem[] = filtered
     .filter((b) => Number.isFinite(b.lat) && Number.isFinite(b.lng))
     .map((b) => ({
@@ -97,7 +111,7 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
       label: b.businessName,
       sublabel: b.type,
       kind: 'safe_business',
-      onClick: () => setRouteDest({ lat: b.lat as number, lng: b.lng as number }),
+      onClick: () => handleRouteToBusiness(b.lat as number, b.lng as number),
     }));
 
   const handleAddBusiness = async (e: React.FormEvent) => {
@@ -173,7 +187,7 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
           userName={globalProfile.name || user.fullName}
-          userPhotoURL={globalProfile.photo || user.photoURL}
+          userPhotoURL={globalProfile.photo || resolvedPhoto}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={pins}
@@ -237,7 +251,7 @@ export const SafeBusinessTab: React.FC<SafeBusinessTabProps> = ({
                   {Number.isFinite(b.lat) && Number.isFinite(b.lng) && (
                     <button
                       type="button"
-                      onClick={() => setRouteDest({ lat: b.lat as number, lng: b.lng as number })}
+                      onClick={() => handleRouteToBusiness(b.lat as number, b.lng as number)}
                       className="px-3 py-2 rounded-xl bg-[#2E9BFF] text-white text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
                     >
                       <Navigation className="w-3.5 h-3.5" />

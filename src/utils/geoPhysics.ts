@@ -166,8 +166,7 @@ export function computeSafeVehicleScore(input: {
 }
 
 /**
- * Top 10 Leaderboard Points Formula:
- * (Verified Reports x 100) + (Total Scans x 10) + (Total Usage Days x 20) + (Total Usage Minutes / 60 x 15)
+ * Legacy helper retained for fallback telemetry compatibility
  */
 export function computeLeaderboardPoints(input: {
   verifiedReports: number;
@@ -184,7 +183,7 @@ export function computeLeaderboardPoints(input: {
 }
 
 /**
- * Africa/Lagos (WAT, UTC+1) date keys for accurate daily scan limits & monthly leaderboards
+ * West Africa Time (WAT, UTC+1) helpers for daily caps & monthly Top 10 cycles
  */
 export function getWatDateKey(date = new Date()): string {
   const watMs = date.getTime() + 60 * 60 * 1000;
@@ -195,11 +194,108 @@ export function getWatMonthKey(date = new Date()): string {
   return getWatDateKey(date).slice(0, 7);
 }
 
+export function getWatHour(date = new Date()): number {
+  const watMs = date.getTime() + 60 * 60 * 1000;
+  return new Date(watMs).getUTCHours();
+}
+
+/**
+ * Night Watch is ONLY active/scored between 7:00 PM (19) and 6:00 AM (< 6) WAT.
+ * Returns a night session key so 22:00 today & 03:00 tomorrow count toward the SAME night!
+ */
+export function isNightWatchWindowWat(date = new Date()): boolean {
+  const h = getWatHour(date);
+  return h >= 19 || h < 6;
+}
+
+export function getNightWatchKeyWat(date = new Date()): string {
+  const h = getWatHour(date);
+  const watMs = date.getTime() + 60 * 60 * 1000;
+  if (h < 6) {
+    // 00:00-05:59 WAT belongs to the previous calendar night
+    return new Date(watMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
+  return new Date(watMs).toISOString().slice(0, 10);
+}
+
 export function isTimestampTodayWat(ts: any): boolean {
   if (!ts) return false;
   const d = typeof ts.toDate === 'function' ? ts.toDate() : new Date(ts);
   if (Number.isNaN(d.getTime())) return false;
   return getWatDateKey(d) === getWatDateKey(new Date());
+}
+
+/**
+ * Explicit Nigerian GPS coordinate checks (NEVER defaults to Lagos).
+ * - Port Harcourt metro bounding box: lat 4.72–4.92, lng 6.88–7.12 (includes 4.75-4.85, 6.9-7.1)
+ * - Greater Rivers State bounding box: lat 4.35–5.22, lng 6.38–7.58
+ */
+export function isCoordsInPortHarcourt(lat: number, lng: number): boolean {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= 4.72 &&
+    lat <= 4.92 &&
+    lng >= 6.88 &&
+    lng <= 7.12
+  );
+}
+
+export function isCoordsInRiversState(lat: number, lng: number): boolean {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= 4.35 &&
+    lat <= 5.22 &&
+    lng >= 6.38 &&
+    lng <= 7.58
+  );
+}
+
+export function inferNigerianCityStateFromCoords(
+  lat: number,
+  lng: number
+): { city: string; state: string } {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { city: '', state: '' };
+  }
+  if (isCoordsInPortHarcourt(lat, lng)) {
+    return { city: 'Port Harcourt', state: 'Rivers' };
+  }
+  if (isCoordsInRiversState(lat, lng)) {
+    return { city: 'Port Harcourt', state: 'Rivers' };
+  }
+  if (lat >= 8.9 && lat <= 9.2 && lng >= 7.3 && lng <= 7.6) {
+    return { city: 'Abuja', state: 'FCT Abuja' };
+  }
+  if (lat >= 6.35 && lat <= 6.72 && lng >= 3.05 && lng <= 3.72) {
+    return { city: 'Lagos', state: 'Lagos' };
+  }
+  return { city: '', state: '' };
+}
+
+export function isLocationStale7Days(locationUpdatedAt: unknown): boolean {
+  if (!locationUpdatedAt) return false;
+  let ms = 0;
+  if (typeof locationUpdatedAt === 'number') {
+    ms = locationUpdatedAt;
+  } else if (typeof locationUpdatedAt === 'string') {
+    ms = Date.parse(locationUpdatedAt);
+  } else if (typeof locationUpdatedAt === 'object') {
+    const o = locationUpdatedAt as { toMillis?: () => number; seconds?: number };
+    if (typeof o.toMillis === 'function') ms = o.toMillis();
+    else if (typeof o.seconds === 'number') ms = o.seconds * 1000;
+  }
+  if (!ms || !Number.isFinite(ms)) return false;
+  return Date.now() - ms > 7 * 24 * 60 * 60 * 1000;
+}
+
+export function formatCityStateLabel(city?: string, state?: string): string {
+  const c = (city || '').trim();
+  const s = (state || '').trim();
+  if (!c && !s) return 'Location Not Set';
+  if (c && s && c.toLowerCase() !== s.toLowerCase()) return `${c}, ${s}`;
+  return c || s;
 }
 
 function formatCoordLabel(lat: number, lng: number): string {
@@ -209,6 +305,8 @@ function formatCoordLabel(lat: number, lng: number): string {
 function parseNominatimAddress(data: any, lat: number, lng: number) {
   const addr = data?.address || {};
   const coordFallback = formatCoordLabel(lat, lng);
+  const coordHint = inferNigerianCityStateFromCoords(lat, lng);
+
   const road =
     addr.road ||
     addr.street ||
@@ -224,7 +322,7 @@ function parseNominatimAddress(data: any, lat: number, lng: number) {
     addr.quarter ||
     addr.city_district ||
     '';
-  const city =
+  const rawCity =
     addr.city ||
     addr.town ||
     addr.village ||
@@ -232,13 +330,27 @@ function parseNominatimAddress(data: any, lat: number, lng: number) {
     addr.county ||
     '';
   const rawState = String(addr.state || '').replace(/\s+State$/i, '').trim();
-  const state = /federal capital territory|abuja|fct/i.test(rawState)
+  let state = /federal capital territory|abuja|fct/i.test(rawState)
     ? 'FCT Abuja'
     : /akwa\s*ibom/i.test(rawState)
     ? 'Akwa Ibom'
     : /cross\s*river/i.test(rawState)
     ? 'Cross River'
     : rawState;
+
+  let city = rawCity;
+  if (isCoordsInPortHarcourt(lat, lng)) {
+    city = 'Port Harcourt';
+    state = 'Rivers';
+  } else if (isCoordsInRiversState(lat, lng)) {
+    state = state || 'Rivers';
+    if (!city || /obio\/?akpor|eleme|oyigbo|ikwerre/i.test(city)) {
+      city = city || 'Port Harcourt';
+    }
+  } else {
+    city = city || coordHint.city;
+    state = state || coordHint.state;
+  }
 
   const displayFirstPart =
     typeof data?.display_name === 'string' && data.display_name.trim()
@@ -282,7 +394,8 @@ function parseNominatimAddress(data: any, lat: number, lng: number) {
 
 /**
  * Reverse geocode lat/lng to real human street address via Nominatim.
- * If Nominatim fails, returns Lat, Lng ONLY (never fake placeholder street names).
+ * Uses GPS bounding check (e.g. Port Harcourt 4.75-4.85, 6.9-7.1) if Nominatim returns sparse fields.
+ * NEVER defaults to Lagos or fake placeholder street names.
  */
 export async function reverseGeocodeHuman(lat: number, lng: number): Promise<{
   formattedAddress: string;
@@ -293,12 +406,13 @@ export async function reverseGeocodeHuman(lat: number, lng: number): Promise<{
   landmark: string;
 }> {
   const coordFallback = formatCoordLabel(lat, lng);
+  const coordHint = inferNigerianCityStateFromCoords(lat, lng);
   const fallbackResult = {
-    formattedAddress: coordFallback,
+    formattedAddress: coordHint.city ? `${coordHint.city}, ${coordHint.state} (${coordFallback})` : coordFallback,
     streetName: coordFallback,
     area: '',
-    city: '',
-    state: '',
+    city: coordHint.city,
+    state: coordHint.state,
     landmark: '',
   };
 
@@ -336,18 +450,20 @@ export async function reverseGeocodeHuman(lat: number, lng: number): Promise<{
     if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data && data.source === 'nominatim' && data.formattedAddress) {
+        const isPH = isCoordsInPortHarcourt(lat, lng);
+        const isRiv = isCoordsInRiversState(lat, lng);
         return {
           formattedAddress: data.formattedAddress || coordFallback,
           streetName: data.streetName || coordFallback,
           area: data.area || '',
-          city: data.city || '',
-          state: data.state || '',
+          city: isPH ? 'Port Harcourt' : data.city || coordHint.city || '',
+          state: isPH || isRiv ? 'Rivers' : data.state || coordHint.state || '',
           landmark: data.landmark || '',
         };
       }
     }
   } catch {
-    // Fall through to Lat, Lng ONLY
+    // Fall through to coordinate hint / Lat, Lng ONLY
   }
 
   return fallbackResult;

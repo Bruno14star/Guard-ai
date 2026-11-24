@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addDoc,
   collection,
@@ -10,6 +10,7 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import {
   ShieldCheck,
@@ -27,21 +28,43 @@ import {
   Flame,
   Sparkles,
   PhoneCall,
+  Trophy,
+  CheckCircle2,
+  Crown,
   X,
+  ChevronRight,
+  Search,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
+  AlertItem,
   HomeVideo,
   HumanLocation,
   PlanType,
   PublicProfile,
   ScannerSubTab,
+  StarterGuardsSettings,
   UserProfile,
   UserUsageStat,
 } from '../types';
-import { findNearestSafePlaceFree, getWatMonthKey } from '../utils/geoPhysics';
+import { FALSE_REPORT_HIDE_THRESHOLD, getDeviceAuditInfo } from '../utils/antiSpam';
+import {
+  findNearestSafePlaceFree,
+  formatCityStateLabel,
+  getWatDateKey,
+  getWatMonthKey,
+} from '../utils/geoPhysics';
+import {
+  awardGuardScoreEvent,
+  buildEndOfMonthWinnerSummary,
+  buildTopReportersDisplayList,
+  buildTopUsersDisplayList,
+  getEffectiveGuardScore,
+  getEffectiveSubscription,
+  isEndOfMonthFreezeWindowWat,
+} from '../utils/guardScore';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
-import { GuardMap } from './GuardMap';
+import { GuardMap, MapPinItem } from './GuardMap';
 import { UserAvatar } from './UserAvatar';
 import { AdBanner } from './AdBanner';
 
@@ -52,7 +75,9 @@ interface HomeTabProps {
   activePlan: PlanType;
   usageStatDocId: string | null;
   onRefreshLocation: (lat: number, lng: number, accuracy: number) => void;
+  onSetMyLocation: () => Promise<boolean>;
   onNavigateScanner: (sub: ScannerSubTab) => void;
+  onOpenSubscriptions: () => void;
   onOpenReportModal: () => void;
   onOpenProfile: (uid: string) => void;
   openSosSignal?: number;
@@ -72,19 +97,23 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   scansToday,
   activePlan,
   onRefreshLocation,
+  onSetMyLocation,
   onNavigateScanner,
+  onOpenSubscriptions,
   onOpenReportModal,
   onOpenProfile,
   openSosSignal,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const userPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, userPhoto);
   const displayName = globalProfile.name || user.fullName;
-  const displayPhoto = globalProfile.photo || user.photoURL || '';
+  const displayPhoto = globalProfile.photo || userPhoto;
+
   const [sansaTips, setSansaTips] = useState<{ id: string; message: string; title?: string }[]>([]);
   const [goodWishBanner, setGoodWishBanner] = useState<string | null>(null);
   const [homeVideos, setHomeVideos] = useState<HomeVideo[]>([]);
   const [topTrusted, setTopTrusted] = useState<PublicProfile[]>([]);
-  const [topReporters, setTopReporters] = useState<UserUsageStat[]>([]);
+  const [monthlyStats, setMonthlyStats] = useState<UserUsageStat[]>([]);
   const [openCommentsFor, setOpenCommentsFor] = useState<string | null>(null);
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [commentInput, setCommentInput] = useState('');
@@ -92,9 +121,30 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const [sosDispatching, setSosDispatching] = useState(false);
   const [sosSafePlaceName, setSosSafePlaceName] = useState<string>('Nearest Public Safe Place');
   const [sosSentConfirmation, setSosSentConfirmation] = useState(false);
+  const [verifiedMapAlerts, setVerifiedMapAlerts] = useState<AlertItem[]>([]);
+  const [settingLoc, setSettingLoc] = useState(false);
+  const [checkInMsg, setCheckInMsg] = useState<string | null>(null);
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [starterSettings, setStarterSettings] = useState<StarterGuardsSettings>({
+    showInApp: true,
+    starterRemoved: false,
+  });
+  const [showAllUsersModal, setShowAllUsersModal] = useState(false);
+  const [showAllReportersModal, setShowAllReportersModal] = useState(false);
+  const [winnerModalOpen, setWinnerModalOpen] = useState(false);
+  const [allListSearch, setAllListSearch] = useState('');
   const viewIncrementedRef = useRef<Set<string>>(new Set());
 
-  // 1. Live Daily Tip from Sansa (sansa_memory where isPublicTip == true)
+  const subInfo = useMemo(() => getEffectiveSubscription(user), [user]);
+  const currentMonthYearLabel = useMemo(
+    () => new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+    []
+  );
+  const currentMonthKey = getWatMonthKey();
+  const todayKey = getWatDateKey();
+  const alreadyCheckedInToday = user.dailyCheckInDate === todayKey;
+
+  // 1. Live Daily Tip from Sansa
   useEffect(() => {
     const q = query(collection(db, 'sansa_memory'), where('isPublicTip', '==', true), limit(5));
     const unsub = onSnapshot(
@@ -137,7 +187,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return () => unsub();
   }, []);
 
-  // 3. Verified By Guard AI - Real Videos (home_videos)
+  // 3. Verified By Guard AI - Real Videos
   useEffect(() => {
     const q = query(collection(db, 'home_videos'), orderBy('verifiedAt', 'desc'), limit(20));
     const unsub = onSnapshot(
@@ -169,7 +219,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return () => unsub();
   }, []);
 
-  // 4. Top 5 Users - Most Trusted (from public_profiles)
+  // 4. Top 5 Users - Most Trusted
   useEffect(() => {
     const q = query(collection(db, 'public_profiles'), orderBy('trust_score', 'desc'), limit(5));
     const unsub = onSnapshot(
@@ -182,7 +232,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return () => unsub();
   }, []);
 
-  // 5. Top 5 Reporters - Most Verified Reports this month (from user_usage_stats)
+  // 5. Monthly user_usage_stats listener (for Top 10 Guardians & Top 5 Reporters)
   useEffect(() => {
     const currentMonth = getWatMonthKey();
     const q = query(
@@ -192,12 +242,69 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const list = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<UserUsageStat, 'id'>) }))
-          .filter((u) => !u.cheatingFlagged && u.verifiedReports > 0)
-          .sort((a, b) => b.verifiedReports - a.verifiedReports)
-          .slice(0, 5);
-        setTopReporters(list);
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<UserUsageStat, 'id'>),
+        }));
+        setMonthlyStats(list);
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, []);
+
+  // 5a. Starter Guards global toggle & monthly freeze settings
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'app_settings', 'starter_guards'),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data() as Partial<StarterGuardsSettings>;
+          setStarterSettings({
+            showInApp: d.showInApp !== false && !d.starterRemoved,
+            starterRemoved: Boolean(d.starterRemoved),
+            lastShuffleDate: d.lastShuffleDate,
+            frozenMonth: d.frozenMonth,
+            monthlyWinnerSummary: d.monthlyWinnerSummary,
+          });
+        }
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, []);
+
+  // 5b. Admin-verified, non-hidden alerts ONLY show on Home Map
+  useEffect(() => {
+    const q = query(collection(db, 'alerts'), where('verifiedByGuardAI', '==', true));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: AlertItem[] = snap.docs
+          .map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              userId: data.userId,
+              userName: data.userName,
+              userProfilePic: data.userProfilePic || '',
+              type: data.type || 'Alert',
+              title: data.title,
+              description: data.description,
+              address: data.address || 'Verified Alert',
+              incidentState: data.incidentState,
+              incidentArea: data.incidentArea,
+              lat: typeof data.lat === 'number' ? data.lat : undefined,
+              lng: typeof data.lng === 'number' ? data.lng : undefined,
+              status: data.status || 'New',
+              verifiedByGuardAI: Boolean(data.verifiedByGuardAI),
+              falseCount: Number(data.falseCount || 0),
+              isHidden: Boolean(data.isHidden),
+              createdAt: data.createdAt,
+            };
+          })
+          .filter((a) => !a.isHidden && (a.falseCount || 0) < FALSE_REPORT_HIDE_THRESHOLD);
+        setVerifiedMapAlerts(list);
       },
       () => {}
     );
@@ -234,6 +341,104 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return () => unsub();
   }, [openCommentsFor]);
 
+  const isMonthFrozen =
+    starterSettings.frozenMonth === currentMonthKey || isEndOfMonthFreezeWindowWat();
+  const showStarterInApp =
+    starterSettings.showInApp && !starterSettings.starterRemoved && !isMonthFrozen;
+
+  const frozenWinnerSummary = useMemo(() => {
+    if (!isMonthFrozen) return null;
+    if (
+      starterSettings.monthlyWinnerSummary &&
+      starterSettings.monthlyWinnerSummary.month === currentMonthKey
+    ) {
+      return starterSettings.monthlyWinnerSummary;
+    }
+    return buildEndOfMonthWinnerSummary(monthlyStats, currentMonthKey);
+  }, [isMonthFrozen, starterSettings.monthlyWinnerSummary, currentMonthKey, monthlyStats]);
+
+  // All Display Top Users (Real active subscribers FIRST -> Starter Guards AFTER with auto slide-down)
+  const allTopUsersDisplay = useMemo(() => {
+    if (frozenWinnerSummary) {
+      return frozenWinnerSummary.topUsers.map((w) => ({
+        id: w.userId,
+        userId: w.userId,
+        name: w.name,
+        profilePicUrl: w.photoURL || '',
+        avatar: w.photoURL || '',
+        city: w.city,
+        state: w.state,
+        totalScans: 0,
+        totalReports: 0,
+        verifiedReports: 0,
+        totalUsageDays: 1,
+        totalUsageMinutes: 0,
+        totalPoints: w.guardScore,
+        guardScore: w.guardScore,
+        month: currentMonthKey,
+        isStarter: false,
+        isRealUser: true,
+      })) as UserUsageStat[];
+    }
+    return buildTopUsersDisplayList(monthlyStats, showStarterInApp);
+  }, [frozenWinnerSummary, monthlyStats, showStarterInApp, currentMonthKey]);
+
+  const top10Guardians = useMemo(() => allTopUsersDisplay.slice(0, 10), [allTopUsersDisplay]);
+
+  // All Display Top Reporters (Real active subscribers FIRST -> Starter Guards AFTER)
+  const allTopReportersDisplay = useMemo(() => {
+    if (frozenWinnerSummary) {
+      return frozenWinnerSummary.topReporters.map((r) => ({
+        id: r.userId,
+        userId: r.userId,
+        name: r.name,
+        profilePicUrl: r.photoURL || '',
+        avatar: r.photoURL || '',
+        city: r.state,
+        state: r.state,
+        totalScans: 0,
+        totalReports: r.totalReports,
+        verifiedReports: r.verifiedReports,
+        totalUsageDays: 1,
+        totalUsageMinutes: 0,
+        totalPoints: r.guardScore,
+        guardScore: r.guardScore,
+        month: currentMonthKey,
+        isStarter: false,
+        isRealUser: true,
+      })) as UserUsageStat[];
+    }
+    return buildTopReportersDisplayList(monthlyStats, showStarterInApp);
+  }, [frozenWinnerSummary, monthlyStats, showStarterInApp, currentMonthKey]);
+
+  const topReporters = useMemo(() => allTopReportersDisplay.slice(0, 5), [allTopReportersDisplay]);
+
+  const myStatRow = useMemo(
+    () => monthlyStats.find((s) => s.userId === user.uid) || null,
+    [monthlyStats, user.uid]
+  );
+  const myGuardScore = myStatRow ? getEffectiveGuardScore(myStatRow) : user.guardScore ?? 0;
+
+  const handleDailyCheckIn = async () => {
+    if (checkingIn || alreadyCheckedInToday) return;
+    setCheckingIn(true);
+    const res = await awardGuardScoreEvent({
+      uid: user.uid,
+      action: 'daily_checkin',
+      userName: displayName,
+      userAvatar: displayPhoto,
+      city: location?.city || user.city || '',
+      state: location?.state || user.state || user.userState || '',
+    });
+    if (res.awarded) {
+      setCheckInMsg(`Checked in! +${res.delta} Guard Score`);
+    } else if (res.reason) {
+      setCheckInMsg(res.reason);
+    }
+    setCheckingIn(false);
+    window.setTimeout(() => setCheckInMsg(null), 3500);
+  };
+
   const handleToggleLike = async (vid: HomeVideo) => {
     const likedBy = Array.isArray(vid.likedBy) ? vid.likedBy : [];
     const already = likedBy.includes(user.uid);
@@ -245,6 +450,20 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         likedBy: nextLikedBy,
         likes: nextLikedBy.length,
       });
+      if (!already) {
+        const res = await awardGuardScoreEvent({
+          uid: user.uid,
+          action: 'community_upvote',
+          userName: displayName,
+          userAvatar: displayPhoto,
+          city: location?.city || user.city || '',
+          state: location?.state || user.state || user.userState || '',
+        });
+        if (res.awarded) {
+          setCheckInMsg(`Upvoted alert! +${res.delta} Guard Score`);
+          window.setTimeout(() => setCheckInMsg(null), 3000);
+        }
+      }
     } catch (err) {
       console.error('Like update failed:', err);
     }
@@ -293,35 +512,58 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     setSosDispatching(true);
     setSosSentConfirmation(false);
 
-    // 1. Lookup nearest real safe building using free OpenStreetMap Overpass API
     if (location) {
       const placeName = await findNearestSafePlaceFree(location.lat, location.lng);
       setSosSafePlaceName(placeName);
     }
 
-    // 2. Write real SOS incident report for Admin + Police dispatch
     if (location) {
       try {
-        await addDoc(collection(db, 'incident_reports'), {
-          reportId: `SOS-${Date.now().toString(36).toUpperCase()}`,
+        const reportId = `SOS-${Date.now().toString(36).toUpperCase()}`;
+        const deviceInfo = getDeviceAuditInfo();
+        const batch = writeBatch(db);
+        const reportRef = doc(collection(db, 'incident_reports'));
+        const auditRef = doc(collection(db, 'report_audit_logs'));
+        const resolvedState = location.state || user.state || user.userState || '';
+
+        batch.set(reportRef, {
+          reportId,
           userId: user.uid,
-          userName: user.fullName,
+          userName: displayName,
           userPhone: user.phone || '',
-          userState: user.userState || location.state || 'Lagos',
-          incidentState: location.state || user.userState || 'Lagos',
+          userState: resolvedState,
+          userProfilePic: displayPhoto,
+          incidentState: resolvedState,
           incidentArea: location.area || location.city || '',
           incidentAddress: location.formattedAddress,
           incidentType: 'SOS Emergency',
-          description: `LIVE SOS triggered by ${user.fullName} while ${location.movementMode} at ${location.formattedAddress}`,
+          description: `LIVE SOS triggered by ${displayName} while ${location.movementMode} at ${location.formattedAddress}`,
           gpsLat: location.lat,
           gpsLng: location.lng,
           guardAiScore: 0.9,
           aiVerdict: 'LIKELY TRUE',
-          status: 'PENDING VERIFICATION',
+          status: 'pending',
           adminDecision: 'pending',
+          visibleOnMap: false,
+          falseCount: 0,
+          falseBy: [],
+          isHidden: false,
+          device: deviceInfo,
           paymentStatus: 'unpaid',
           createdAt: serverTimestamp(),
         });
+
+        batch.set(auditRef, {
+          reportId,
+          userId: user.uid,
+          incidentType: 'SOS Emergency',
+          device: deviceInfo,
+          status: 'pending',
+          action: 'SOS_REPORT_SUBMITTED',
+          timestamp: serverTimestamp(),
+        });
+
+        await batch.commit();
         setSosSentConfirmation(true);
       } catch (err) {
         console.error('SOS write failed:', err);
@@ -337,6 +579,11 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   }, [openSosSignal]);
 
   const scanCapLabel = activePlan === 'Free' ? `${scansToday} / 2` : `${scansToday} / Unlimited`;
+  const cityStateText = formatCityStateLabel(
+    location?.city || user.city,
+    location?.state || user.state || user.userState
+  );
+  const locationMissing = !location && cityStateText === 'Location Not Set';
 
   return (
     <div className="flex flex-col min-h-full">
@@ -368,13 +615,196 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 Hello, {displayName}
               </p>
               <p className="text-[11px] text-[#00E67A] font-semibold truncate">
-                Protected • {activePlan} Plan
+                {cityStateText} • {activePlan} Plan
               </p>
             </div>
           </button>
+
+          <button
+            type="button"
+            disabled={alreadyCheckedInToday || checkingIn}
+            onClick={handleDailyCheckIn}
+            className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1 shrink-0 cursor-pointer ${
+              alreadyCheckedInToday
+                ? 'bg-[#00E67A]/15 border border-[#00E67A]/40 text-[#00E67A]'
+                : 'bg-[#00E67A] text-slate-950 hover:bg-[#00cf6d]'
+            }`}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>{alreadyCheckedInToday ? 'Safe Today' : 'I Am Safe (+10)'}</span>
+          </button>
         </div>
 
-        {/* Top Safety Score & Streak Card */}
+        {checkInMsg && (
+          <div className="p-2.5 rounded-xl bg-[#00E67A]/15 border border-[#00E67A]/40 text-xs font-bold text-[#00E67A]">
+            {checkInMsg}
+          </div>
+        )}
+
+        {/* End-of-Month Freeze & Real Winners Banner */}
+        {frozenWinnerSummary && (
+          <div className="bg-[#0C1626] border-2 border-[#00E67A] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Crown className="w-6 h-6 text-[#FFC400] shrink-0" />
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold text-[#00E67A] uppercase tracking-wide">
+                  {frozenWinnerSummary.monthName} Leaderboard Frozen — Real Subscribers Only
+                </p>
+                <p className="text-sm font-extrabold text-white truncate">
+                  {frozenWinnerSummary.topUsers[0]
+                    ? `Top User of ${frozenWinnerSummary.monthName}: ${frozenWinnerSummary.topUsers[0].name} - ₦10,000`
+                    : `Top User of ${frozenWinnerSummary.monthName}: Real Subscribers Only`}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setWinnerModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-[#00E67A] text-slate-950 font-extrabold text-xs shrink-0 cursor-pointer"
+            >
+              View Winners
+            </button>
+          </div>
+        )}
+
+        {/* FIXED TOP 10 USERS BOX AT TOP OF HOME DASHBOARD */}
+        <div className="bg-[#0C1626] border-2 border-[#FFC400]/50 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Trophy className="w-5 h-5 text-[#FFC400] shrink-0" />
+              <div className="min-w-0">
+                <h2 className="text-sm font-extrabold text-white truncate">
+                  Top 10 Users - {currentMonthYearLabel}
+                </h2>
+                <p className="text-[11px] text-[#00E67A] font-semibold">
+                  Top 10 Users of the Month Win ₦10,000 - Real Subscribers Only.
+                </p>
+              </div>
+            </div>
+            <span className="px-2 py-1 rounded-lg bg-[#FFC400]/15 border border-[#FFC400]/40 text-[10px] font-extrabold text-[#FFC400] shrink-0">
+              ₦100,000 Pool
+            </span>
+          </div>
+
+          {!subInfo.isSubscriber && (
+            <div className="p-3 rounded-xl bg-[#FF2D55]/10 border border-[#FF2D55]/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <p className="text-xs font-semibold text-white">
+                Top 10 is for subscribers only. Subscribe to ₦5,000 to compete for ₦10,000
+              </p>
+              <button
+                type="button"
+                onClick={onOpenSubscriptions}
+                className="px-3 py-1.5 rounded-lg bg-[#2E9BFF] text-white text-xs font-extrabold shrink-0 cursor-pointer flex items-center gap-1 self-start sm:self-auto"
+              >
+                <Crown className="w-3.5 h-3.5" />
+                <span>Subscribe ₦5,000</span>
+              </button>
+            </div>
+          )}
+
+          {top10Guardians.length === 0 ? (
+            <div className="p-4 rounded-xl bg-[#050B14] border border-slate-800 text-center text-xs text-slate-400">
+              No active subscribers ranked yet for {currentMonthYearLabel}. Scan &amp; verify incidents to lead!
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-[10px] uppercase text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2 pr-2">Rank</th>
+                    <th className="py-2 pr-2">User</th>
+                    <th className="py-2 pr-2">State</th>
+                    <th className="py-2 pr-2 text-right">Guard Score</th>
+                    <th className="py-2 pl-2 text-right">Prize</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70">
+                  {top10Guardians.map((row, idx) => {
+                    const isMe = row.userId === user.uid;
+                    const rowAvatar = isMe
+                      ? displayPhoto
+                      : row.profilePicUrl || row.avatar || '';
+                    return (
+                      <tr
+                        key={row.id}
+                        onClick={() => onOpenProfile(row.userId)}
+                        className={`cursor-pointer ${
+                          isMe ? 'bg-[#FFC400]/15' : 'hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <td className="py-2 pr-2 font-mono font-extrabold text-[#FFC400] whitespace-nowrap">
+                          {idx === 0 ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Crown className="w-3.5 h-3.5 text-[#FFC400] fill-[#FFC400]/30" />
+                              #1
+                            </span>
+                          ) : (
+                            `#${idx + 1}`
+                          )}
+                        </td>
+                        <td className="py-2 pr-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <UserAvatar
+                              photoURL={rowAvatar}
+                              name={isMe ? displayName : row.name}
+                              size="xs"
+                              borderVariant={isMe ? 'purple' : 'green'}
+                              fallbackVariant={isMe ? 'purple' : 'letter'}
+                            />
+                            <span className="font-bold text-white truncate max-w-[115px]">
+                              {isMe ? displayName : row.name}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2 pr-2 text-slate-300 truncate max-w-[85px]">
+                          {row.state || row.city || 'Nigeria'}
+                        </td>
+                        <td className="py-2 pr-2 text-right font-mono font-extrabold text-[#2E9BFF] tabular-nums">
+                          {(row.guardScore ?? 0).toLocaleString()}
+                        </td>
+                        <td className="py-2 pl-2 text-right font-mono font-extrabold text-[#00E67A] tabular-nums">
+                          ₦10,000
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {allTopUsersDisplay.length > 10 && (
+            <button
+              type="button"
+              onClick={() => {
+                setAllListSearch('');
+                setShowAllUsersModal(true);
+              }}
+              className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#050B14] hover:bg-slate-900 border border-slate-700 text-xs font-extrabold text-[#2E9BFF] flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <span>See All Users ({allTopUsersDisplay.length})</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Report & Earn Subscribers-Only Banner */}
+        <div className="p-3 rounded-2xl bg-orange-500/10 border border-orange-500/40 flex items-center justify-between gap-2 text-xs">
+          <span className="font-bold text-orange-300">
+            Report &amp; Earn: ₦5,000 per verified report - Subscribers Only
+          </span>
+          {!subInfo.isSubscriber && (
+            <button
+              type="button"
+              onClick={onOpenSubscriptions}
+              className="px-2.5 py-1 rounded-lg bg-orange-500 text-white font-extrabold text-[11px] shrink-0 cursor-pointer"
+            >
+              Upgrade
+            </button>
+          )}
+        </div>
+
+        {/* Top Safety Score, Guard Score & Streak Card */}
         <div
           data-tutorial-target="safety-score-card"
           className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3"
@@ -402,10 +832,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <div className="px-2.5 py-1.5 rounded-xl bg-[#050B14] border border-slate-800 text-center">
-                <p className="text-xs font-bold font-mono text-[#00E67A] tabular-nums">
-                  {user.safetyScore ?? 100}
+                <p className="text-xs font-bold font-mono text-[#2E9BFF] tabular-nums">
+                  {myGuardScore}
                 </p>
-                <p className="text-[10px] text-slate-400">Safety</p>
+                <p className="text-[10px] text-slate-400">Guard Score</p>
               </div>
               <div className="px-2.5 py-1.5 rounded-xl bg-[#050B14] border border-slate-800 text-center">
                 <p className="text-xs font-bold font-mono text-[#FFC400] tabular-nums flex items-center justify-center gap-0.5">
@@ -429,8 +859,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </div>
         </div>
 
-        {/* Live Location Card: Real Nominatim Street Name + Lat/Lng/Accuracy */}
-        <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-1.5">
+        {/* Live Location Card: Real Nominatim Street Name OR Location Not Set + Set My Location button */}
+        <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-[#2E9BFF] flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5" />
@@ -440,17 +870,44 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               {location?.movementMode || 'Walking'}
             </span>
           </div>
-          <p className="text-sm font-bold text-white">
-            {location ? `You are at: ${location.formattedAddress}` : 'Waiting for live GPS signal...'}
-          </p>
-          {location && (
-            <p className="text-xs font-mono text-slate-400">
-              Lat: {location.lat.toFixed(5)}, Lng: {location.lng.toFixed(5)} • Accuracy: {location.accuracy} meters
-            </p>
+
+          {location ? (
+            <>
+              <p className="text-sm font-bold text-white">
+                You are at: {location.formattedAddress}
+              </p>
+              <p className="text-xs font-mono text-slate-400">
+                Lat: {location.lat.toFixed(5)}, Lng: {location.lng.toFixed(5)} • Accuracy:{' '}
+                {location.accuracy} meters
+              </p>
+            </>
+          ) : (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-[#FFC400]">
+                  {locationMissing ? 'Location Not Set' : cityStateText}
+                </p>
+                <p className="text-xs text-slate-400">
+                  Enable GPS to detect your real street and city (never guessed from IP).
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={settingLoc}
+                onClick={async () => {
+                  setSettingLoc(true);
+                  await onSetMyLocation();
+                  setSettingLoc(false);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-[#2E9BFF] text-white font-extrabold text-xs shrink-0 cursor-pointer"
+              >
+                {settingLoc ? 'Locating...' : 'Set My Location'}
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Tall Map with Profile Photo & Refresh Map Button */}
+        {/* Tall Map with Profile Photo, Verified Alert Pins (never pending), & Refresh Map Button */}
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
@@ -458,6 +915,22 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           userPhotoURL={displayPhoto}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
+          pins={verifiedMapAlerts
+            .filter(
+              (a): a is AlertItem & { lat: number; lng: number } =>
+                typeof a.lat === 'number' &&
+                Number.isFinite(a.lat) &&
+                typeof a.lng === 'number' &&
+                Number.isFinite(a.lng) &&
+                (a.lat !== 0 || a.lng !== 0)
+            )
+            .map((a): MapPinItem => ({
+              id: a.id,
+              lat: a.lat,
+              lng: a.lng,
+              label: `${a.type}: ${a.incidentArea || a.address}`,
+              kind: 'alert',
+            }))}
           onRefreshLocation={onRefreshLocation}
           heightClassName="h-[360px]"
         />
@@ -540,18 +1013,18 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           )}
         </div>
 
-        {/* Verified By Guard AI - Real Videos (Paid ₦5,000 only) */}
+        {/* Verified By Guard AI - Real Videos */}
         <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-extrabold text-white">
               Verified By Guard AI - Real Videos
             </h2>
-            <span className="text-[11px] font-semibold text-[#00E67A]">Paid ₦5,000</span>
+            <span className="text-[11px] font-semibold text-[#00E67A]">Subscribers Earn ₦5,000</span>
           </div>
 
           {homeVideos.length === 0 ? (
             <p className="text-xs text-slate-400 py-4 text-center">
-              No verified paid incident videos yet. Submit a live video report to earn ₦5,000.
+              No verified incident videos yet. Submit a live video report to earn ₦5,000.
             </p>
           ) : (
             <div className="space-y-4">
@@ -585,13 +1058,13 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                         </div>
                       </button>
                       <span className="px-2 py-1 rounded-lg bg-[#00E67A]/15 border border-[#00E67A]/40 text-[10px] font-bold text-[#00E67A] shrink-0">
-                        Verified + Paid ₦5,000
+                        Verified Video
                       </span>
                     </div>
 
                     <div className="text-xs font-semibold text-[#FF2D55]">{vid.incidentType}</div>
 
-                    {vid.videoUrl && vid.videoUrl.startsWith('http') || vid.videoUrl.startsWith('data:video') ? (
+                    {vid.videoUrl && (vid.videoUrl.startsWith('http') || vid.videoUrl.startsWith('data:video')) ? (
                       <video
                         src={vid.videoUrl}
                         controls
@@ -699,7 +1172,11 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                         #{idx + 1}
                       </span>
                       <UserAvatar
-                        photoURL={u.userId === user.uid ? displayPhoto : u.photoURL}
+                        photoURL={
+                          u.userId === user.uid
+                            ? displayPhoto
+                            : u.profilePicUrl || u.photoURL
+                        }
                         name={u.userId === user.uid ? displayName : u.fullName}
                         size="xs"
                         borderVariant={u.userId === user.uid ? 'purple' : 'green'}
@@ -718,50 +1195,89 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             )}
           </div>
 
-          {/* Top 5 Reporters */}
+          {/* Top 5 Reporters (+ See All) */}
           <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-2.5">
-            <h3 className="text-xs font-extrabold text-white flex items-center gap-1.5">
-              <Award className="w-4 h-4 text-[#FFC400]" />
-              Top 5 Reporters - Verified Reports
-            </h3>
+            <div>
+              <h3 className="text-xs font-extrabold text-white flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-[#FFC400]" />
+                <span>Top 5 Reporters</span>
+              </h3>
+              <p className="text-[11px] text-[#FFC400] font-semibold mt-0.5">
+                Top 5 Reporters Win Recognition + Bonus. Real Subscribers Only.
+              </p>
+            </div>
             {topReporters.length === 0 ? (
               <p className="text-xs text-slate-500 py-3">No verified reports yet this month.</p>
             ) : (
               <div className="space-y-2">
-                {topReporters.map((u, idx) => (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => onOpenProfile(u.userId)}
-                    className="w-full flex items-center justify-between gap-2 p-2 rounded-xl bg-[#050B14] hover:border-slate-700 border border-slate-800/80 text-left cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs font-mono font-bold text-slate-400 w-4">
-                        #{idx + 1}
-                      </span>
-                      <UserAvatar
-                        photoURL={u.userId === user.uid ? displayPhoto : u.avatar}
-                        name={u.userId === user.uid ? displayName : u.name}
-                        size="xs"
-                        borderVariant={u.userId === user.uid ? 'purple' : 'green'}
-                        fallbackVariant={u.userId === user.uid ? 'purple' : 'grey'}
-                      />
-                      <span className="text-xs font-semibold text-white truncate">
-                        {u.userId === user.uid ? displayName : u.name}
-                      </span>
-                    </div>
-                    <span className="text-xs font-mono font-bold text-[#FFC400] shrink-0">
-                      {u.verifiedReports} verified
-                    </span>
-                  </button>
-                ))}
+                {topReporters.map((u, idx) => {
+                  const isMe = u.userId === user.uid;
+                  const repPhoto = isMe ? displayPhoto : u.profilePicUrl || u.avatar || '';
+                  return (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => onOpenProfile(u.userId)}
+                      className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[#050B14] hover:border-slate-700 border border-slate-800/80 text-left cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs font-mono font-extrabold text-[#FFC400] w-5 shrink-0">
+                          #{idx + 1}
+                        </span>
+                        <UserAvatar
+                          photoURL={repPhoto}
+                          name={isMe ? displayName : u.name}
+                          size="xs"
+                          borderVariant={isMe ? 'purple' : 'green'}
+                          fallbackVariant={isMe ? 'purple' : 'letter'}
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-bold text-white truncate max-w-[110px]">
+                              {isMe ? displayName : u.name}
+                            </span>
+                            {idx === 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#FFC400]/15 border border-[#FFC400]/40 text-[9px] font-extrabold text-[#FFC400]">
+                                Top Reporter of the Month
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {u.state || u.city || 'Nigeria'} • Total: {u.totalReports || u.verifiedReports} • Score: {(u.guardScore ?? 0).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-mono font-extrabold text-[#00E67A] block">
+                          {u.verifiedReports} verified
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-semibold">
+                          {idx === 0 ? 'Bonus + Crown' : 'Verified'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
+            )}
+
+            {allTopReportersDisplay.length > 5 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAllListSearch('');
+                  setShowAllReportersModal(true);
+                }}
+                className="w-full min-h-[44px] py-2 px-3 rounded-xl bg-[#050B14] hover:bg-slate-900 border border-slate-700 text-xs font-extrabold text-[#FFC400] flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <span>See All Reporters ({allTopReportersDisplay.length})</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
             )}
           </div>
         </div>
       </div>
 
-      {/* Bottom 50px AdMob Banner */}
       <AdBanner />
 
       {/* Plain-Language SOS Emergency Sheet */}
@@ -782,7 +1298,6 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               </button>
             </div>
 
-            {/* SOS Sender Identity Card: MY Picture + MY Name + MY Phone */}
             <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-[#050B14] border border-slate-800">
               <UserAvatar
                 photoURL={displayPhoto}
@@ -804,7 +1319,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
             <div className="p-3.5 rounded-2xl bg-[#FF2D55]/15 border border-[#FF2D55]/40">
               <p className="text-sm font-bold text-white">
-                You are at: {location ? location.formattedAddress : 'Live GPS Position'} - Help is coming
+                You are at: {location ? location.formattedAddress : 'Location Not Set'} - Help is coming
               </p>
               {sosDispatching ? (
                 <p className="text-xs text-slate-300 mt-1">Sending SOS alert...</p>
@@ -832,6 +1347,304 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 <span>Call Emergency Contact ({user.emergencyContact})</span>
               </a>
             )}
+          </div>
+        </div>
+      )}
+      {/* See All Users Modal (Positions 11 to 56+ & Full List) */}
+      {showAllUsersModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full max-w-lg max-h-[88vh] flex flex-col bg-[#0C1626] border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Trophy className="w-4 h-4 text-[#FFC400]" />
+                  <span>All Ranked Users ({allTopUsersDisplay.length})</span>
+                </h2>
+                <p className="text-[11px] text-[#00E67A]">
+                  Top 10 Users of the Month Win ₦10,000 - Real Subscribers Only.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllUsersModal(false)}
+                className="w-10 h-10 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
+                aria-label="Close All Users"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                type="text"
+                value={allListSearch}
+                onChange={(e) => setAllListSearch(e.target.value)}
+                placeholder="Search by name or state..."
+                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[#050B14] border border-slate-800 text-xs text-white focus:outline-none focus:border-[#2E9BFF]"
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+              {allTopUsersDisplay
+                .map((row, index) => ({ row, rank: index + 1 }))
+                .filter(({ row }) => {
+                  const q = allListSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    row.name.toLowerCase().includes(q) ||
+                    (row.state || '').toLowerCase().includes(q) ||
+                    (row.city || '').toLowerCase().includes(q)
+                  );
+                })
+                .map(({ row, rank }) => {
+                  const isMe = row.userId === user.uid;
+                  const rowAvatar = isMe ? displayPhoto : row.profilePicUrl || row.avatar || '';
+                  return (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => {
+                        setShowAllUsersModal(false);
+                        onOpenProfile(row.userId);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 p-2.5 rounded-xl border text-left cursor-pointer ${
+                        isMe
+                          ? 'bg-[#FFC400]/15 border-[#FFC400]/50'
+                          : rank <= 10
+                          ? 'bg-[#050B14] border-[#00E67A]/30'
+                          : 'bg-[#050B14] border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-7 text-xs font-mono font-extrabold text-[#FFC400] shrink-0">
+                          {rank === 1 ? '👑 #1' : `#${rank}`}
+                        </span>
+                        <UserAvatar
+                          photoURL={rowAvatar}
+                          name={isMe ? displayName : row.name}
+                          size="xs"
+                          borderVariant={isMe ? 'purple' : 'green'}
+                          fallbackVariant={isMe ? 'purple' : 'letter'}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">
+                            {isMe ? displayName : row.name}
+                          </p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {row.state || row.city || 'Nigeria'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs font-mono font-extrabold text-[#2E9BFF] tabular-nums">
+                          {(row.guardScore ?? 0).toLocaleString()} pts
+                        </p>
+                        {rank <= 10 && (
+                          <p className="text-[10px] font-bold text-[#00E67A]">₦10,000</p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* See All Reporters Modal (Positions 6 to 56+ & Full List) */}
+      {showAllReportersModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full max-w-lg max-h-[88vh] flex flex-col bg-[#0C1626] border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Award className="w-4 h-4 text-[#FFC400]" />
+                  <span>All Top Reporters ({allTopReportersDisplay.length})</span>
+                </h2>
+                <p className="text-[11px] text-[#FFC400]">
+                  Top 5 Reporters Win Recognition + Bonus. Real Subscribers Only.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllReportersModal(false)}
+                className="w-10 h-10 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
+                aria-label="Close All Reporters"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                type="text"
+                value={allListSearch}
+                onChange={(e) => setAllListSearch(e.target.value)}
+                placeholder="Search reporter by name or state..."
+                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[#050B14] border border-slate-800 text-xs text-white focus:outline-none focus:border-[#2E9BFF]"
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+              {allTopReportersDisplay
+                .map((u, index) => ({ u, rank: index + 1 }))
+                .filter(({ u }) => {
+                  const q = allListSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    u.name.toLowerCase().includes(q) ||
+                    (u.state || '').toLowerCase().includes(q) ||
+                    (u.city || '').toLowerCase().includes(q)
+                  );
+                })
+                .map(({ u, rank }) => {
+                  const isMe = u.userId === user.uid;
+                  const repPhoto = isMe ? displayPhoto : u.profilePicUrl || u.avatar || '';
+                  return (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => {
+                        setShowAllReportersModal(false);
+                        onOpenProfile(u.userId);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 p-2.5 rounded-xl border text-left cursor-pointer ${
+                        isMe
+                          ? 'bg-[#FFC400]/15 border-[#FFC400]/50'
+                          : rank <= 5
+                          ? 'bg-[#050B14] border-[#FFC400]/40'
+                          : 'bg-[#050B14] border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-7 text-xs font-mono font-extrabold text-[#FFC400] shrink-0">
+                          #{rank}
+                        </span>
+                        <UserAvatar
+                          photoURL={repPhoto}
+                          name={isMe ? displayName : u.name}
+                          size="xs"
+                          borderVariant={isMe ? 'purple' : 'green'}
+                          fallbackVariant={isMe ? 'purple' : 'letter'}
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-bold text-white truncate">
+                              {isMe ? displayName : u.name}
+                            </span>
+                            {rank === 1 && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#FFC400]/15 border border-[#FFC400]/40 text-[9px] font-extrabold text-[#FFC400]">
+                                Top Reporter of the Month
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {u.state || u.city || 'Nigeria'} • Total Reports: {u.totalReports || u.verifiedReports} • Guard Score: {(u.guardScore ?? 0).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-mono font-extrabold text-[#00E67A] block">
+                          {u.verifiedReports} verified
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-semibold">
+                          {rank === 1 ? 'Top Reporter' : rank <= 5 ? 'Bonus Eligible' : 'Community'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* End-of-Month Real Subscribers Winner Modal */}
+      {winnerModalOpen && frozenWinnerSummary && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full max-w-md max-h-[88vh] overflow-y-auto bg-[#0C1626] border-2 border-[#00E67A] rounded-t-3xl sm:rounded-3xl p-5 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Crown className="w-5 h-5 text-[#FFC400]" />
+                <h2 className="text-base font-extrabold text-white">
+                  {frozenWinnerSummary.monthName} Official Winners
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWinnerModalOpen(false)}
+                className="w-9 h-9 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-[#00E67A]/15 border border-[#00E67A]/50">
+              <p className="text-sm font-extrabold text-white">
+                {frozenWinnerSummary.topUsers[0]
+                  ? `Top User of ${frozenWinnerSummary.monthName}: ${frozenWinnerSummary.topUsers[0].name} - ₦10,000`
+                  : `Top User of ${frozenWinnerSummary.monthName}: Real Subscribers Only`}
+              </p>
+              <p className="text-[11px] text-slate-300 mt-1">
+                Starter Guards excluded automatically. Winners verified from active paid subscribers only.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-xs font-extrabold text-[#FFC400]">Top 10 Users (₦10,000 Each)</h3>
+              {frozenWinnerSummary.topUsers.length === 0 ? (
+                <p className="text-xs text-slate-400">No active paid subscriber winners this month.</p>
+              ) : (
+                frozenWinnerSummary.topUsers.map((w) => (
+                  <div
+                    key={w.userId}
+                    className="p-2.5 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono font-bold text-[#FFC400]">#{w.rank}</span>
+                      <UserAvatar
+                        photoURL={w.photoURL}
+                        name={w.name}
+                        size="xs"
+                        fallbackVariant="letter"
+                      />
+                      <span className="font-bold text-white truncate">{w.name}</span>
+                    </div>
+                    <span className="font-mono font-extrabold text-[#00E67A] shrink-0">₦10,000</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-xs font-extrabold text-[#2E9BFF]">Top 5 Reporters (Recognition + Bonus)</h3>
+              {frozenWinnerSummary.topReporters.length === 0 ? (
+                <p className="text-xs text-slate-400">No verified real-subscriber reporters this month.</p>
+              ) : (
+                frozenWinnerSummary.topReporters.map((r) => (
+                  <div
+                    key={r.userId}
+                    className="p-2.5 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono font-bold text-[#2E9BFF]">#{r.rank}</span>
+                      <UserAvatar
+                        photoURL={r.photoURL}
+                        name={r.name}
+                        size="xs"
+                        fallbackVariant="letter"
+                      />
+                      <span className="font-bold text-white truncate">{r.name}</span>
+                    </div>
+                    <span className="font-mono font-bold text-[#FFC400] shrink-0">
+                      {r.verifiedReports} verified
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

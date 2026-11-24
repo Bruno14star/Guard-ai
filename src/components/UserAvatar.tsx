@@ -7,7 +7,7 @@ interface UserAvatarProps {
   size?: 'xs' | 'sm' | 'md' | '40' | 'lg' | 'xl';
   greenBorder?: boolean;
   borderVariant?: 'purple' | 'green' | 'none';
-  fallbackVariant?: 'purple' | 'grey';
+  fallbackVariant?: 'purple' | 'grey' | 'letter';
   fallbackLabel?: string;
   className?: string;
 }
@@ -20,6 +20,15 @@ const SIZE_MAP = {
   lg: 'w-16 h-16 text-lg',
   xl: 'w-24 h-24 text-2xl',
 };
+
+const LETTER_BG_PALETTE = [
+  'bg-[#7C3AED]',
+  'bg-emerald-600',
+  'bg-sky-600',
+  'bg-amber-600',
+  'bg-rose-600',
+  'bg-indigo-600',
+];
 
 export const UserAvatar: React.FC<UserAvatarProps> = ({
   photoURL,
@@ -73,6 +82,19 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
         ) : (
           <UserIcon className="w-1/2 h-1/2 text-slate-200" />
         )}
+      </div>
+    );
+  }
+
+  if (fallbackVariant === 'letter') {
+    const code = trimmedName.charCodeAt(0) || 65;
+    const bgCls = LETTER_BG_PALETTE[code % LETTER_BG_PALETTE.length];
+    return (
+      <div
+        className={`${sizeCls} rounded-full shrink-0 ${bgCls} text-white font-extrabold flex items-center justify-center ${activeBorder} shadow-sm ${className}`}
+        aria-label={trimmedName || 'User avatar'}
+      >
+        {initial}
       </div>
     );
   }

@@ -13,4 +13,7 @@ export const dirtyDozenPayloads = [
   { name: 'Reading Other Family Circle', collection: 'family_tracking', op: 'list', expected: 'PERMISSION_DENIED' },
   { name: 'ID Poisoning', collection: 'users', op: 'create', expected: 'PERMISSION_DENIED' },
   { name: 'Client Timestamp Backdating', collection: 'incident_reports', op: 'create', expected: 'PERMISSION_DENIED' },
+  { name: 'Under-24h / 30m Anti-Spam Report Bypass', collection: 'incident_reports', op: 'create', expected: 'PERMISSION_DENIED' },
+  { name: 'Duplicate False Vote & Unbacked Reporter Flag', collection: 'alerts', op: 'update', expected: 'PERMISSION_DENIED' },
+  { name: 'Audit Log Modification Attempt', collection: 'report_audit_logs', op: 'update', expected: 'PERMISSION_DENIED' },
 ];

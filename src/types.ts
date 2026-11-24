@@ -2,6 +2,63 @@ export type AppTab = 'home' | 'family' | 'weapon' | 'alerts' | 'safe_business' |
 export type ScannerSubTab = 'road' | 'vehicle' | 'building' | 'night_watch';
 export type MovementMode = 'Walking' | 'In Vehicle' | 'In Building';
 export type PlanType = 'Free' | 'Monthly' | 'Yearly';
+export type SubscriptionPlanCode = 'FREE' | 'MONTHLY_5000' | 'YEARLY_35000';
+export type SubscriptionStatusType = 'active' | 'expired' | 'pending' | 'free';
+
+export interface MonthlyGuardBreakdown {
+  verifiedGunshotRobberyKidnapReports: number;
+  verifiedOtherReports: number;
+  verifiedReportMediaBonusCount: number;
+  reportsScoredTodayCount: number;
+  reportsScoredDayKey?: string;
+
+  roadScansCount: number;
+  roadSafeTripFinishCount: number;
+  roadScansTodayCount: number;
+  roadScansDayKey?: string;
+
+  buildingScansCount: number;
+  buildingDangerAvoidCount: number;
+  buildingScansTodayCount: number;
+  buildingScansDayKey?: string;
+
+  vehicleScansCount: number;
+  vehicleStolenAvoidCount: number;
+  vehicleScansTodayCount: number;
+  vehicleScansDayKey?: string;
+
+  nightWatchScansCount: number;
+  nightWatchThreatFoundCount: number;
+  nightWatchNightCount: number;
+  nightWatchNightKey?: string;
+
+  familyActiveDaysCount: number;
+  familyActiveLastDayKey?: string;
+  familyStreakCount: number;
+  familySevenDayStreaksCount: number;
+  familySafeArrivalsCount: number;
+  familyVerifiedMembersCount: number;
+
+  safeRoutesUsedCount: number;
+  safeRoutesTodayCount: number;
+  safeRoutesDayKey?: string;
+
+  communityVerificationsCorrectCount: number;
+  communityUpvotesCount?: number;
+  upvotesTodayCount?: number;
+  upvotesDayKey?: string;
+  dailyCheckInsCount: number;
+  lastCheckInDate?: string;
+
+  subscribedReferralsCount: number;
+  falseRejectedReportsCount: number;
+}
+
+export interface ScoreHistoryEntry {
+  action: string;
+  delta: number;
+  at: string;
+}
 
 export interface HumanLocation {
   lat: number;
@@ -26,24 +83,59 @@ export interface UserProfile {
   phone?: string;
   email?: string;
   city?: string;
+  state?: string;
   userState?: string;
+  locationSource?: 'gps' | 'manual';
+  locationUpdatedAt?: any;
+  locationMigrated?: boolean;
+  lastLat?: number;
+  lastLng?: number;
   bio?: string;
   photoURL?: string;
   profilePicUrl?: string;
+  profilePicUpdatedAt?: any;
   emergencyContact?: string;
   role: 'user' | 'admin' | 'banned';
   safetyScore: number;
   trust_score: number;
   streak: number;
   subscription?: 'free' | 'active' | 'pending' | 'expired';
+  subscriptionPlan?: SubscriptionPlanCode;
+  subscriptionStatus?: SubscriptionStatusType;
+  subscriptionExpiresAt?: any;
   verifiedBadge?: boolean;
   tutorialSeen?: boolean;
   followersCount?: number;
   followingCount?: number;
   walletBalance?: number;
+  availableBalanceNaira?: number;
+  totalEarnedNaira?: number;
+  guardScore?: number;
+  guardScoreMonth?: string;
+  monthlyBreakdown?: MonthlyGuardBreakdown;
+  dailyCheckInDate?: string;
+  referralCode?: string;
+  referredByCode?: string;
+  referredByUid?: string;
+  falseReportsThisMonth?: number;
+  falseReportMonth?: string;
+  reportEarnSuspendedUntil?: any;
   lastStreakDate?: string;
+  lastReportAt?: any;
+  flaggedReporter?: boolean;
+  flaggedReportId?: string;
+  flaggedReason?: string;
+  flaggedAt?: any;
   lastActive?: any;
+  lastActiveAt?: any;
   createdAt?: any;
+  isStarter?: boolean;
+  isRealUser?: boolean;
+  canWinPayout?: boolean;
+  authProvider?: string;
+  starterRank?: number;
+  totalReports?: number;
+  verifiedReports?: number;
 }
 
 export interface PublicProfile {
@@ -52,8 +144,10 @@ export interface PublicProfile {
   username?: string;
   bio?: string;
   city?: string;
+  state?: string;
   userState?: string;
   photoURL?: string;
+  profilePicUrl?: string;
   verifiedBadge?: boolean;
   trust_score: number;
   safetyScore: number;
@@ -64,6 +158,10 @@ export interface PublicProfile {
   verifiedReports: number;
   totalScans: number;
   joinedAt?: any;
+  isStarter?: boolean;
+  isRealUser?: boolean;
+  canWinPayout?: boolean;
+  guardScore?: number;
 }
 
 export interface FamilyMember {
@@ -105,6 +203,7 @@ export interface AlertItem {
   id: string;
   userId?: string;
   userName?: string;
+  userProfilePic?: string;
   type: string;
   title?: string;
   description?: string;
@@ -118,13 +217,17 @@ export interface AlertItem {
   videoUrl?: string;
   photoUrl?: string;
   verifiedByGuardAI: boolean;
+  reportId?: string;
+  falseCount?: number;
+  falseBy?: string[];
+  isHidden?: boolean;
   createdAt?: any;
 }
 
 export interface SubscriptionDoc {
   id: string;
   userId: string;
-  plan: PlanType;
+  plan: PlanType | SubscriptionPlanCode;
   status: 'active' | 'pending' | 'expired' | 'rejected';
   amount: number;
   createdAt?: any;
@@ -151,6 +254,7 @@ export interface IncidentReport {
   userName?: string;
   userPhone?: string;
   userState?: string;
+  userProfilePic?: string;
   incidentState?: string;
   incidentArea?: string;
   incidentAddress: string;
@@ -176,7 +280,23 @@ export interface IncidentReport {
   forwardedTo?: string;
   forwardedAt?: any;
   forwardedState?: string;
+  visibleOnMap?: boolean;
+  device?: string;
+  falseCount?: number;
+  falseBy?: string[];
+  isHidden?: boolean;
   createdAt?: any;
+}
+
+export interface ReportAuditLog {
+  id: string;
+  reportId: string;
+  userId: string;
+  incidentType: string;
+  device: string;
+  status: string;
+  action: string;
+  timestamp?: any;
 }
 
 export interface PoliceStation {
@@ -226,6 +346,12 @@ export interface UserUsageStat {
   userId: string;
   name: string;
   avatar?: string;
+  profilePicUrl?: string;
+  city?: string;
+  state?: string;
+  subscriptionPlan?: SubscriptionPlanCode;
+  subscriptionStatus?: SubscriptionStatusType;
+  subscriptionExpiresAt?: any;
   totalScans: number;
   totalReports: number;
   verifiedReports: number;
@@ -233,9 +359,51 @@ export interface UserUsageStat {
   lastActiveDate?: string;
   totalUsageMinutes: number;
   totalPoints: number;
+  guardScore?: number;
+  monthlyBreakdown?: MonthlyGuardBreakdown;
+  scoreHistory?: ScoreHistoryEntry[];
   month: string;
   cheatingFlagged?: boolean;
   lastActive?: any;
+  lastActiveAt?: any;
+  isStarter?: boolean;
+  isRealUser?: boolean;
+  canWinPayout?: boolean;
+  starterRank?: number;
+  authProvider?: string;
+  createdAt?: any;
+}
+
+export interface ReferralDoc {
+  id: string;
+  referredUid: string;
+  referredName?: string;
+  referrerUid?: string;
+  referrerCode: string;
+  status: 'PENDING' | 'SUBSCRIBED' | 'Reward Paid';
+  subscriptionStatus?: string;
+  subscribedPlan?: string;
+  rewardPaid: boolean;
+  rewardAmount: number;
+  rewardNote?: string;
+  createdAt?: any;
+  subscribedAt?: any;
+}
+
+export interface LeaderboardHistoryDoc {
+  id: string;
+  month: string;
+  totalPaid: number;
+  winners: {
+    rank: number;
+    userId: string;
+    name: string;
+    city: string;
+    guardScore: number;
+    prize: number;
+  }[];
+  paidByAdminId?: string;
+  paidAt?: any;
 }
 
 export interface OPaySettings {
@@ -243,3 +411,40 @@ export interface OPaySettings {
   accountName: string;
   accountNumber: string;
 }
+
+export interface MonthlyFrozenWinnerUser {
+  rank: number;
+  userId: string;
+  name: string;
+  city: string;
+  state: string;
+  guardScore: number;
+  prize: number;
+  photoURL?: string;
+}
+
+export interface MonthlyFrozenWinnerReporter {
+  rank: number;
+  userId: string;
+  name: string;
+  state: string;
+  totalReports: number;
+  verifiedReports: number;
+  guardScore: number;
+  photoURL?: string;
+}
+
+export interface StarterGuardsSettings {
+  showInApp: boolean;
+  starterRemoved: boolean;
+  lastShuffleDate?: string;
+  frozenMonth?: string;
+  monthlyWinnerSummary?: {
+    month: string;
+    monthName: string;
+    topUsers: MonthlyFrozenWinnerUser[];
+    topReporters: MonthlyFrozenWinnerReporter[];
+    frozenAt: string;
+  };
+}
+

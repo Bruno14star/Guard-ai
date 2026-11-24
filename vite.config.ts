@@ -5,7 +5,24 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
+  let appletFirestoreDbId = '';
+  let appletProjectId = '';
+  try {
+    const cfgPath = path.resolve(__dirname, 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+      appletFirestoreDbId = String(parsed?.firestoreDatabaseId || '').trim();
+      appletProjectId = String(parsed?.projectId || '').trim();
+    }
+  } catch {
+    // ignore missing or invalid config file
+  }
+
   return {
+    define: {
+      __APPLET_FIRESTORE_DATABASE_ID__: JSON.stringify(appletFirestoreDbId),
+      __APPLET_PROJECT_ID__: JSON.stringify(appletProjectId),
+    },
     plugins: [
       react(),
       tailwindcss(),

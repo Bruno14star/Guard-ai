@@ -12,15 +12,18 @@ import {
   serverTimestamp,
   setDoc,
 } from 'firebase/firestore';
-import { Shield, Lock, Mail, Phone, User, MapPin, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { Shield, Lock, Mail, Phone, User, MapPin, ArrowRight, Eye, EyeOff, Gift } from 'lucide-react';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import { NIGERIAN_STATES } from '../data/nigeriaPoliceSeed';
-import { reverseGeocodeHuman } from '../utils/geoPhysics';
+import { getWatMonthKey, reverseGeocodeHuman } from '../utils/geoPhysics';
+import { EMPTY_MONTHLY_BREAKDOWN, generateReferralCode } from '../utils/guardScore';
 import { seedGlobalUserProfile } from '../utils/userProfileStore';
 
 interface SplashAndAuthProps {
   onAuthenticated: () => void;
 }
+
+const PENDING_REF_STORAGE_KEY = 'guard_pending_ref';
 
 export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated }) => {
   const [stage, setStage] = useState<'splash' | 'auth'>('splash');
@@ -31,9 +34,12 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [city, setCity] = useState('');
-  const [userState, setUserState] = useState('Lagos');
+  const [userState, setUserState] = useState('');
+  const [gpsLocationDetected, setGpsLocationDetected] = useState(false);
+  const [lastLatLng, setLastLatLng] = useState<{ lat: number; lng: number } | null>(null);
   const [emergencyName, setEmergencyName] = useState('');
   const [emergencyPhone, setEmergencyPhone] = useState('');
+  const [refInput, setRefInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +48,24 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
     return () => clearTimeout(timer);
   }, []);
 
-  // Optional auto-detect city from GPS if user already granted permission
+  // Capture ?ref=CODE URL parameter for Referral tracking
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlRef = (params.get('ref') || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (urlRef) {
+        window.sessionStorage.setItem(PENDING_REF_STORAGE_KEY, urlRef);
+        setRefInput(urlRef);
+      } else {
+        const saved = window.sessionStorage.getItem(PENDING_REF_STORAGE_KEY) || '';
+        if (saved) setRefInput(saved);
+      }
+    } catch {
+      // ignore URL/sessionStorage failures
+    }
+  }, []);
+
+  // Optional auto-detect city/state ONLY if GPS permission is already granted (NEVER use IP or default to Lagos)
   useEffect(() => {
     if (mode !== 'signup' || !navigator.geolocation) return;
     navigator.permissions
@@ -51,14 +74,20 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
         if (perm.state === 'granted') {
           navigator.geolocation.getCurrentPosition(
             async (pos) => {
-              const info = await reverseGeocodeHuman(pos.coords.latitude, pos.coords.longitude);
-              if (info.city) setCity(info.city);
+              const { latitude, longitude } = pos.coords;
+              setLastLatLng({ lat: latitude, lng: longitude });
+              const info = await reverseGeocodeHuman(latitude, longitude);
+              if (info.city) {
+                setCity(info.city);
+                setGpsLocationDetected(true);
+              }
               if (info.state && NIGERIAN_STATES.includes(info.state)) {
                 setUserState(info.state);
+                setGpsLocationDetected(true);
               }
             },
             () => {},
-            { timeout: 5000 }
+            { enableHighAccuracy: true, timeout: 6000 }
           );
         }
       })
@@ -75,110 +104,191 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
       userState: string;
       emergencyContact: string;
       photoURL?: string;
+      authProvider: 'gmail' | 'email';
     }
   ) => {
     const userRef = doc(db, 'users', uid);
     const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      const username =
-        info.fullName
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '')
-          .slice(0, 16) || `guard${uid.slice(0, 5)}`;
+    if (snap.exists()) {
+      // Existing user: NEVER overwrite profilePicUrl or existing location!
+      const existing = snap.data();
+      seedGlobalUserProfile(
+        existing.fullName || info.fullName,
+        existing.profilePicUrl || existing.photoURL || ''
+      );
+      return;
+    }
 
-      // COLLECTION: users
-      try {
-        await setDoc(userRef, {
-          uid,
-          fullName: info.fullName,
-          username,
-          phone: info.phone,
-          email: info.email,
-          city: info.city || info.userState || 'Lagos',
-          userState: info.userState || 'Lagos',
-          bio: 'Protected by Guard AI',
-          photoURL: info.photoURL || '',
-          profilePicUrl: info.photoURL || '',
-          emergencyContact: info.emergencyContact,
-          role: 'user',
-          safetyScore: 100,
-          trust_score: 100,
-          streak: 1,
-          subscription: 'free',
-          verifiedBadge: false,
-          tutorialSeen: false,
-          followersCount: 0,
-          followingCount: 0,
-          walletBalance: 0,
-          lastActive: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${uid}`);
-      }
+    const username =
+      info.fullName
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .slice(0, 16) || `guard${uid.slice(0, 5)}`;
 
-      // COLLECTION: public_profiles
-      try {
-        await setDoc(doc(db, 'public_profiles', uid), {
-          userId: uid,
-          fullName: info.fullName,
-          username,
-          bio: 'Protected by Guard AI',
-          city: info.city || info.userState || 'Lagos',
-          userState: info.userState || 'Lagos',
-          photoURL: info.photoURL || '',
-          verifiedBadge: false,
-          trust_score: 100,
-          safetyScore: 100,
-          streak: 1,
-          followersCount: 0,
-          followingCount: 0,
-          totalReports: 0,
-          verifiedReports: 0,
-          totalScans: 0,
-          joinedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `public_profiles/${uid}`);
-      }
+    const myReferralCode = generateReferralCode(info.fullName, uid);
+    const cleanCity = info.city.trim();
+    const cleanState = info.userState.trim();
+    const cleanRefCode = (refInput || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-      // COLLECTION: me_profiles
+    let referredByUid = '';
+    let resolvedRefCode = '';
+    if (cleanRefCode && cleanRefCode !== myReferralCode) {
       try {
-        await setDoc(doc(db, 'me_profiles', uid), {
-          userId: uid,
-          fullName: info.fullName,
-          phone: info.phone,
-          email: info.email,
-          city: info.city || info.userState || 'Lagos',
-          userState: info.userState || 'Lagos',
-          emergencyContact: info.emergencyContact,
-          photoURL: info.photoURL || '',
-          settings: {
-            notifications: true,
-            locationSharing: true,
-            language: 'English',
-            darkMode: true,
-          },
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `me_profiles/${uid}`);
-      }
-
-      // COLLECTION: subscriptions (Auto-create Free plan on Sign Up)
-      try {
-        await addDoc(collection(db, 'subscriptions'), {
-          userId: uid,
-          plan: 'Free',
-          status: 'active',
-          amount: 0,
-          createdAt: serverTimestamp(),
-          expiresAt: null,
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, 'subscriptions');
+        const refCodeSnap = await getDoc(doc(db, 'referral_codes', cleanRefCode));
+        if (refCodeSnap.exists()) {
+          const ownerUid = String(refCodeSnap.data()?.ownerUid || '');
+          if (ownerUid && ownerUid !== uid) {
+            referredByUid = ownerUid;
+            resolvedRefCode = cleanRefCode;
+          }
+        }
+      } catch {
+        // non-blocking referral lookup
       }
     }
+
+    // COLLECTION: users (NEVER default location to Lagos)
+    try {
+      await setDoc(userRef, {
+        uid,
+        fullName: info.fullName,
+        username,
+        phone: info.phone,
+        email: info.email,
+        city: cleanCity,
+        state: cleanState,
+        userState: cleanState,
+        ...(gpsLocationDetected ? { locationSource: 'gps', locationUpdatedAt: serverTimestamp() } : cleanCity || cleanState ? { locationSource: 'manual', locationUpdatedAt: serverTimestamp() } : {}),
+        ...(lastLatLng ? { lastLat: lastLatLng.lat, lastLng: lastLatLng.lng } : {}),
+        bio: 'Protected by Guard AI',
+        photoURL: info.photoURL || '',
+        profilePicUrl: info.photoURL || '',
+        emergencyContact: info.emergencyContact,
+        role: 'user',
+        safetyScore: 100,
+        trust_score: 100,
+        streak: 1,
+        subscription: 'free',
+        subscriptionPlan: 'FREE',
+        subscriptionStatus: 'free',
+        verifiedBadge: false,
+        tutorialSeen: false,
+        followersCount: 0,
+        followingCount: 0,
+        walletBalance: 0,
+        availableBalanceNaira: 0,
+        totalEarnedNaira: 0,
+        guardScore: 0,
+        guardScoreMonth: getWatMonthKey(),
+        monthlyBreakdown: EMPTY_MONTHLY_BREAKDOWN,
+        referralCode: myReferralCode,
+        ...(resolvedRefCode ? { referredByCode: resolvedRefCode, referredByUid } : {}),
+        falseReportsThisMonth: 0,
+        flaggedReporter: false,
+        isStarter: false,
+        isRealUser: true,
+        authProvider: info.authProvider,
+        lastActive: serverTimestamp(),
+        lastActiveAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `users/${uid}`);
+    }
+
+    // COLLECTION: public_profiles
+    try {
+      await setDoc(doc(db, 'public_profiles', uid), {
+        userId: uid,
+        fullName: info.fullName,
+        username,
+        bio: 'Protected by Guard AI',
+        city: cleanCity,
+        state: cleanState,
+        userState: cleanState,
+        photoURL: info.photoURL || '',
+        profilePicUrl: info.photoURL || '',
+        verifiedBadge: false,
+        trust_score: 100,
+        safetyScore: 100,
+        streak: 1,
+        followersCount: 0,
+        followingCount: 0,
+        totalReports: 0,
+        verifiedReports: 0,
+        totalScans: 0,
+        isStarter: false,
+        isRealUser: true,
+        joinedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `public_profiles/${uid}`);
+    }
+
+    // COLLECTION: me_profiles
+    try {
+      await setDoc(doc(db, 'me_profiles', uid), {
+        userId: uid,
+        fullName: info.fullName,
+        phone: info.phone,
+        email: info.email,
+        city: cleanCity,
+        state: cleanState,
+        userState: cleanState,
+        emergencyContact: info.emergencyContact,
+        photoURL: info.photoURL || '',
+        settings: {
+          notifications: true,
+          locationSharing: true,
+          language: 'English',
+          darkMode: true,
+        },
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `me_profiles/${uid}`);
+    }
+
+    // COLLECTION: referral_codes + referrals
+    try {
+      await setDoc(doc(db, 'referral_codes', myReferralCode), {
+        ownerUid: uid,
+        code: myReferralCode,
+        createdAt: serverTimestamp(),
+      });
+      if (resolvedRefCode && referredByUid) {
+        await setDoc(doc(db, 'referrals', uid), {
+          referredUid: uid,
+          referredName: info.fullName,
+          referrerUid: referredByUid,
+          referrerCode: resolvedRefCode,
+          status: 'PENDING',
+          subscriptionStatus: 'free',
+          rewardPaid: false,
+          rewardAmount: 0,
+          createdAt: serverTimestamp(),
+        });
+        window.sessionStorage.removeItem(PENDING_REF_STORAGE_KEY);
+      }
+    } catch {
+      // non-blocking referral registration
+    }
+
+    // COLLECTION: subscriptions (Auto-create Free plan on Sign Up)
+    try {
+      await addDoc(collection(db, 'subscriptions'), {
+        userId: uid,
+        plan: 'FREE',
+        status: 'active',
+        amount: 0,
+        createdAt: serverTimestamp(),
+        expiresAt: null,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'subscriptions');
+    }
+
+    seedGlobalUserProfile(info.fullName, info.photoURL || '');
   };
 
   const handleGoogleSignIn = async () => {
@@ -190,12 +300,12 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
         fullName: cred.user.displayName || 'Guard AI Member',
         phone: cred.user.phoneNumber || '',
         email: cred.user.email || '',
-        city: city || 'Lagos',
-        userState: userState || 'Lagos',
+        city: city.trim(),
+        userState: userState.trim(),
         emergencyContact: '',
         photoURL: cred.user.photoURL || '',
+        authProvider: 'gmail',
       });
-      seedGlobalUserProfile(cred.user.displayName || 'Guard AI Member', cred.user.photoURL || '');
       onAuthenticated();
     } catch (err: any) {
       setError(err?.message || 'Google sign-in failed. Please try again.');
@@ -220,21 +330,20 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
           fullName: fullName.trim(),
           phone: phone.trim(),
           email: email.trim(),
-          city: city.trim() || userState,
-          userState,
+          city: city.trim(),
+          userState: userState.trim(),
           emergencyContact: emergencyName.trim()
             ? `${emergencyName.trim()} (${emergencyPhone.trim()})`
             : emergencyPhone.trim(),
+          authProvider: 'email',
         });
-        seedGlobalUserProfile(fullName.trim(), '');
       } else {
         if (!email.trim() || !password) {
           setError('Enter your email and password.');
           setLoading(false);
           return;
         }
-        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-        seedGlobalUserProfile(cred.user.displayName || '', cred.user.photoURL || '');
+        await signInWithEmailAndPassword(auth, email.trim(), password);
       }
       onAuthenticated();
     } catch (err: any) {
@@ -368,17 +477,24 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
                   <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
                   <input
                     type="text"
-                    placeholder="City (auto/manual)"
+                    placeholder="City (or GPS)"
                     value={city}
-                    onChange={(e) => setCity(e.target.value)}
+                    onChange={(e) => {
+                      setCity(e.target.value);
+                      setGpsLocationDetected(false);
+                    }}
                     className="w-full min-h-[44px] pl-10 pr-3 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#2E9BFF]"
                   />
                 </div>
                 <select
                   value={userState}
-                  onChange={(e) => setUserState(e.target.value)}
+                  onChange={(e) => {
+                    setUserState(e.target.value);
+                    setGpsLocationDetected(false);
+                  }}
                   className="w-full min-h-[44px] px-3 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white focus:outline-none focus:border-[#2E9BFF]"
                 >
+                  <option value="">State (via GPS)</option>
                   {NIGERIAN_STATES.map((st) => (
                     <option key={st} value={st}>
                       {st}
@@ -401,6 +517,17 @@ export const SplashAndAuth: React.FC<SplashAndAuthProps> = ({ onAuthenticated })
                   value={emergencyPhone}
                   onChange={(e) => setEmergencyPhone(e.target.value)}
                   className="w-full min-h-[44px] px-3 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#2E9BFF]"
+                />
+              </div>
+
+              <div className="relative">
+                <Gift className="w-4 h-4 text-[#00E67A] absolute left-3.5 top-3.5" />
+                <input
+                  type="text"
+                  placeholder="Referral Code (optional)"
+                  value={refInput}
+                  onChange={(e) => setRefInput(e.target.value.toUpperCase())}
+                  className="w-full min-h-[44px] pl-10 pr-4 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white placeholder-slate-500 uppercase focus:outline-none focus:border-[#00E67A]"
                 />
               </div>
             </>

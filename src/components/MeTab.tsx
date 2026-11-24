@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   addDoc,
   collection,
   doc,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -17,13 +16,22 @@ import {
   Award,
   Camera,
   CheckCircle2,
+  ChevronRight,
   Clock,
   Copy,
   CreditCard,
+  Crown,
+  Edit3,
+  Gift,
   HelpCircle,
   LogOut,
+  MapPin,
+  MessageSquare,
+  Navigation,
   RefreshCw,
+  Search,
   Settings,
+  Share2,
   Shield,
   Trophy,
   Upload,
@@ -32,18 +40,35 @@ import {
   X,
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType, storage } from '../firebase';
+import { NIGERIAN_STATES } from '../data/nigeriaPoliceSeed';
 import {
   HumanLocation,
   IncidentReport,
   OPaySettings,
   PaymentDoc,
   PlanType,
+  ReferralDoc,
+  StarterGuardsSettings,
   UserProfile,
   UserUsageStat,
 } from '../types';
-import { getWatMonthKey } from '../utils/geoPhysics';
 import {
-  compressImageTo500,
+  formatCityStateLabel,
+  getWatMonthKey,
+  isLocationStale7Days,
+} from '../utils/geoPhysics';
+import {
+  buildEndOfMonthWinnerSummary,
+  buildTopUsersDisplayList,
+  generateReferralCode,
+  getEffectiveGuardScore,
+  getEffectiveSubscription,
+  isEndOfMonthFreezeWindowWat,
+  isEligibleForTop10,
+  sortTop10Guardians,
+} from '../utils/guardScore';
+import {
+  compressImageToJpegBlob,
   saveUserProfileName,
   saveUserProfilePhoto,
   useGlobalUserProfile,
@@ -59,6 +84,7 @@ interface MeTabProps {
   usageStatDocId: string | null;
   darkMode: boolean;
   onToggleDarkMode: () => void;
+  onSetMyLocation: () => Promise<boolean>;
   onOpenReportModal: () => void;
   onOpenProfile: (uid: string) => void;
   onReplayTutorial?: () => void;
@@ -77,13 +103,17 @@ function getMonthCountdown(): string {
   return `${days}d ${hours}h ${mins}m left`;
 }
 
+const CITY_PRESETS = ['Port Harcourt', 'Lagos', 'Abuja', 'Kano', 'Ibadan', 'Enugu', 'Benin City'];
+
 export const MeTab: React.FC<MeTabProps> = ({
   user,
+  location,
   scansToday,
   activePlan,
   usageStatDocId,
   darkMode,
   onToggleDarkMode,
+  onSetMyLocation,
   onOpenReportModal,
   onOpenProfile,
   onReplayTutorial,
@@ -91,29 +121,40 @@ export const MeTab: React.FC<MeTabProps> = ({
   openProfileSectionSignal,
   openSettingsSectionSignal,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const userPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, userPhoto);
   const displayName = globalProfile.name || user.fullName;
-  const displayPhoto = globalProfile.photo || user.photoURL || '';
+  const displayPhoto = globalProfile.photo || userPhoto;
 
   const [section, setSection] = useState<'profile' | 'subscriptions' | 'leaderboard' | 'settings'>(
     'profile'
   );
 
-  // Profile Edit State
+  // Profile Edit State (NEVER default state to Lagos)
   const [fullName, setFullName] = useState(displayName || '');
   const [username, setUsername] = useState(user.username || '');
   const [phone, setPhone] = useState(user.phone || '');
   const [city, setCity] = useState(user.city || '');
-  const [userState, setUserState] = useState(user.userState || 'Lagos');
+  const [userState, setUserState] = useState(user.state || user.userState || '');
   const [bio, setBio] = useState(user.bio || '');
   const [emergencyContact, setEmergencyContact] = useState(user.emergencyContact || '');
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSavedMsg, setProfileSavedMsg] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-  // My Reports & Wallet History
+  // Manual Location Editor Modal/Drawer
+  const [editLocOpen, setEditLocOpen] = useState(false);
+  const [manualCity, setManualCity] = useState(user.city || '');
+  const [manualState, setManualState] = useState(user.state || user.userState || '');
+  const [savingLoc, setSavingLoc] = useState(false);
+  const [locMsg, setLocMsg] = useState<string | null>(null);
+
+  // My Reports, Wallet & Referrals
   const [myReports, setMyReports] = useState<IncidentReport[]>([]);
   const [walletTxs, setWalletTxs] = useState<{ id: string; amount: number; description: string }[]>([]);
+  const [myReferrals, setMyReferrals] = useState<ReferralDoc[]>([]);
+  const [copiedRefCode, setCopiedRefCode] = useState(false);
+  const [copiedRefLink, setCopiedRefLink] = useState(false);
 
   // Subscriptions & Manual OPay Payment
   const [opaySettings, setOpaySettings] = useState<OPaySettings | null>(null);
@@ -123,9 +164,14 @@ export const MeTab: React.FC<MeTabProps> = ({
   const [submittingPayment, setSubmittingPayment] = useState(false);
   const [copiedAccount, setCopiedAccount] = useState(false);
 
-  // Real Top 10 Monthly Leaderboard
-  const [leaderboard, setLeaderboard] = useState<UserUsageStat[]>([]);
-  const [lbSort, setLbSort] = useState<'points' | 'scans' | 'usage'>('points');
+  // Real Monthly Top 10 Guardians (Subscribers Only) + Starter Guards toggle
+  const [monthlyStats, setMonthlyStats] = useState<UserUsageStat[]>([]);
+  const [starterSettings, setStarterSettings] = useState<StarterGuardsSettings>({
+    showInApp: true,
+    starterRemoved: false,
+  });
+  const [showAllUsersModal, setShowAllUsersModal] = useState(false);
+  const [allListSearch, setAllListSearch] = useState('');
   const [countdown, setCountdown] = useState<string>(getMonthCountdown());
 
   // Settings & Real Device Permissions
@@ -135,22 +181,31 @@ export const MeTab: React.FC<MeTabProps> = ({
   const [geoPerm, setGeoPerm] = useState<string>('checking');
   const [micPerm, setMicPerm] = useState<string>('checking');
 
+  const subInfo = useMemo(() => getEffectiveSubscription(user), [user]);
+  const myReferralCode = useMemo(
+    () => user.referralCode || generateReferralCode(user.fullName, user.uid),
+    [user.referralCode, user.fullName, user.uid]
+  );
+  const referralLink = `https://guardaitech.netlify.app/?ref=${myReferralCode}`;
+  const whatsappInviteText = `I use Guard AI to scan roads, buildings, vehicles before I enter. Stay safe. Join with my code ${myReferralCode}: ${referralLink}`;
+
   useEffect(() => {
-    if (openSubSectionSignal && openSubSectionSignal > 0) {
-      setSection('subscriptions');
-    }
+    setCity(user.city || '');
+    setUserState(user.state || user.userState || '');
+    setManualCity(user.city || '');
+    setManualState(user.state || user.userState || '');
+  }, [user.city, user.state, user.userState]);
+
+  useEffect(() => {
+    if (openSubSectionSignal && openSubSectionSignal > 0) setSection('subscriptions');
   }, [openSubSectionSignal]);
 
   useEffect(() => {
-    if (openProfileSectionSignal && openProfileSectionSignal > 0) {
-      setSection('profile');
-    }
+    if (openProfileSectionSignal && openProfileSectionSignal > 0) setSection('profile');
   }, [openProfileSectionSignal]);
 
   useEffect(() => {
-    if (openSettingsSectionSignal && openSettingsSectionSignal > 0) {
-      setSection('settings');
-    }
+    if (openSettingsSectionSignal && openSettingsSectionSignal > 0) setSection('settings');
   }, [openSettingsSectionSignal]);
 
   useEffect(() => {
@@ -160,10 +215,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // Load my incident reports
   useEffect(() => {
-    const q = query(
-      collection(db, 'incident_reports'),
-      where('userId', '==', user.uid)
-    );
+    const q = query(collection(db, 'incident_reports'), where('userId', '==', user.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -186,10 +238,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // Load my wallet transactions
   useEffect(() => {
-    const q = query(
-      collection(db, 'wallet_transactions'),
-      where('userId', '==', user.uid)
-    );
+    const q = query(collection(db, 'wallet_transactions'), where('userId', '==', user.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -211,16 +260,35 @@ export const MeTab: React.FC<MeTabProps> = ({
     return () => unsub();
   }, [user.uid]);
 
+  // Load my referrals (where referrerUid == user.uid)
+  useEffect(() => {
+    const q = query(collection(db, 'referrals'), where('referrerUid', '==', user.uid));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs
+          .map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<ReferralDoc, 'id'>),
+          }))
+          .sort((a, b) => {
+            const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+            const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+            return tb - ta;
+          });
+        setMyReferrals(list);
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, [user.uid]);
+
   // Load live OPay Settings
   useEffect(() => {
     const unsub = onSnapshot(
       doc(db, 'app_settings', 'opay'),
       (snap) => {
-        if (snap.exists()) {
-          setOpaySettings(snap.data() as OPaySettings);
-        } else {
-          setOpaySettings(null);
-        }
+        setOpaySettings(snap.exists() ? (snap.data() as OPaySettings) : null);
       },
       () => {}
     );
@@ -229,10 +297,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // Load my OPay payments
   useEffect(() => {
-    const q = query(
-      collection(db, 'payments'),
-      where('userId', '==', user.uid)
-    );
+    const q = query(collection(db, 'payments'), where('userId', '==', user.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -253,19 +318,41 @@ export const MeTab: React.FC<MeTabProps> = ({
     return () => unsub();
   }, [user.uid]);
 
-  // Load real monthly Top 10 Leaderboard (auto-refreshes live + 30s countdown tick)
+  // Load monthly user_usage_stats
   useEffect(() => {
     const month = getWatMonthKey();
     const q = query(collection(db, 'user_usage_stats'), where('month', '==', month));
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const list = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<UserUsageStat, 'id'>) }))
-          .filter((u) => !u.cheatingFlagged);
-        setLeaderboard(list);
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<UserUsageStat, 'id'>),
+        }));
+        setMonthlyStats(list);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'user_usage_stats')
+    );
+    return () => unsub();
+  }, []);
+
+  // Load Starter Guards display toggle & monthly freeze state
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'app_settings', 'starter_guards'),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data() as Partial<StarterGuardsSettings>;
+          setStarterSettings({
+            showInApp: d.showInApp !== false && !d.starterRemoved,
+            starterRemoved: Boolean(d.starterRemoved),
+            lastShuffleDate: d.lastShuffleDate,
+            frozenMonth: d.frozenMonth,
+            monthlyWinnerSummary: d.monthlyWinnerSummary,
+          });
+        }
+      },
+      () => {}
     );
     return () => unsub();
   }, []);
@@ -293,59 +380,104 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
   }, [section]);
 
-  // Global profile picture compress (max 500x500, max 500KB) + save to localStorage ("guard_user_photo")
+  // Permanent Profile Picture Upload ONLY to Firebase Storage `profilePictures/{userId}.jpg` -> Firestore profilePicUrl
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingPhoto(true);
     setProfileSavedMsg(null);
     try {
-      const { localDataUrl, firestoreSafeDataUrl } = await compressImageTo500(file);
+      const jpegBlob = await compressImageToJpegBlob(file);
+      const storageRef = ref(storage, `profilePictures/${user.uid}.jpg`);
+      await uploadBytes(storageRef, jpegBlob, { contentType: 'image/jpeg' });
+      const downloadUrl = await getDownloadURL(storageRef);
 
-      // Save ONCE globally to localStorage ("guard_user_photo" & "guard_user_name")
-      // so Home, Map, SOS, Report, Leaderboard update INSTANTLY without refresh
-      saveUserProfilePhoto(localDataUrl);
+      saveUserProfilePhoto(downloadUrl);
       saveUserProfileName(fullName.trim() || displayName || user.fullName);
-      setProfileSavedMsg('Profile picture updated everywhere!');
 
-      // Best-effort non-blocking sync to Firestore/Storage so other users can also see it
-      let cloudUrl = firestoreSafeDataUrl;
-      try {
-        const blob = await (await fetch(localDataUrl)).blob();
-        const sRef = ref(storage, `users/${user.uid}/profile.jpg`);
-        await uploadBytes(sRef, blob);
-        cloudUrl = await getDownloadURL(sRef);
-      } catch {
-        cloudUrl = firestoreSafeDataUrl;
+      await updateDoc(doc(db, 'users', user.uid), {
+        profilePicUrl: downloadUrl,
+        photoURL: downloadUrl,
+        profilePicUpdatedAt: serverTimestamp(),
+      });
+
+      updateDoc(doc(db, 'public_profiles', user.uid), {
+        profilePicUrl: downloadUrl,
+        photoURL: downloadUrl,
+      }).catch(() => {});
+
+      setDoc(
+        doc(db, 'me_profiles', user.uid),
+        {
+          userId: user.uid,
+          photoURL: downloadUrl,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      ).catch(() => {});
+
+      if (usageStatDocId) {
+        updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
+          profilePicUrl: downloadUrl,
+          avatar: downloadUrl,
+        }).catch(() => {});
       }
 
-      if (cloudUrl.length <= 145000) {
-        updateDoc(doc(db, 'users', user.uid), {
-          photoURL: cloudUrl,
-          profilePicUrl: cloudUrl,
-        }).catch(() => {});
-        updateDoc(doc(db, 'public_profiles', user.uid), {
-          photoURL: cloudUrl,
-        }).catch(() => {});
-        setDoc(
-          doc(db, 'me_profiles', user.uid),
-          {
-            userId: user.uid,
-            photoURL: cloudUrl,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        ).catch(() => {});
-        if (usageStatDocId) {
-          updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
-            avatar: cloudUrl,
-          }).catch(() => {});
-        }
-      }
-    } catch {
-      setProfileSavedMsg('Could not process selected photo.');
+      setProfileSavedMsg('Profile picture saved permanently to cloud!');
+    } catch (err) {
+      console.error('Profile picture upload error:', err);
+      setProfileSavedMsg('Upload failed — please check connection and try again.');
     } finally {
       setUploadingPhoto(false);
+    }
+  };
+
+  const handleSaveManualLocation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const nextCity = manualCity.trim();
+    const nextState = manualState.trim();
+    if (!nextCity && !nextState) return;
+    setSavingLoc(true);
+    setLocMsg(null);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        city: nextCity,
+        state: nextState,
+        userState: nextState,
+        locationSource: 'manual',
+        locationUpdatedAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'public_profiles', user.uid), {
+        city: nextCity,
+        state: nextState,
+        userState: nextState,
+      }).catch(() => {});
+      await setDoc(
+        doc(db, 'me_profiles', user.uid),
+        {
+          userId: user.uid,
+          city: nextCity,
+          state: nextState,
+          userState: nextState,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      ).catch(() => {});
+      if (usageStatDocId) {
+        await updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
+          city: nextCity,
+          state: nextState,
+        }).catch(() => {});
+      }
+      setCity(nextCity);
+      setUserState(nextState);
+      setEditLocOpen(false);
+      setLocMsg(`Location updated to ${formatCityStateLabel(nextCity, nextState)} (Manual).`);
+      window.setTimeout(() => setLocMsg(null), 3500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+    } finally {
+      setSavingLoc(false);
     }
   };
 
@@ -354,22 +486,29 @@ export const MeTab: React.FC<MeTabProps> = ({
     setSavingProfile(true);
     setProfileSavedMsg(null);
     const nextName = fullName.trim() || user.fullName;
+    const nextCity = city.trim();
+    const nextState = userState.trim();
+    const locationChanged =
+      nextCity !== (user.city || '') || nextState !== (user.state || user.userState || '');
     saveUserProfileName(nextName);
     try {
       await updateDoc(doc(db, 'users', user.uid), {
         fullName: nextName,
         username: username.trim(),
         phone: phone.trim(),
-        city: city.trim(),
-        userState,
+        city: nextCity,
+        state: nextState,
+        userState: nextState,
+        ...(locationChanged ? { locationSource: 'manual', locationUpdatedAt: serverTimestamp() } : {}),
         bio: bio.trim(),
         emergencyContact: emergencyContact.trim(),
       });
       await updateDoc(doc(db, 'public_profiles', user.uid), {
         fullName: nextName,
         username: username.trim(),
-        city: city.trim(),
-        userState,
+        city: nextCity,
+        state: nextState,
+        userState: nextState,
         bio: bio.trim(),
       });
       await setDoc(
@@ -378,8 +517,9 @@ export const MeTab: React.FC<MeTabProps> = ({
           userId: user.uid,
           fullName: nextName,
           phone: phone.trim(),
-          city: city.trim(),
-          userState,
+          city: nextCity,
+          state: nextState,
+          userState: nextState,
           bio: bio.trim(),
           emergencyContact: emergencyContact.trim(),
           updatedAt: serverTimestamp(),
@@ -389,6 +529,8 @@ export const MeTab: React.FC<MeTabProps> = ({
       if (usageStatDocId) {
         await updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
           name: nextName,
+          city: nextCity,
+          state: nextState,
         });
       }
       setProfileSavedMsg('Profile saved.');
@@ -451,16 +593,88 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
   };
 
-  // Sorted Top 10 Leaderboard
-  const sortedLeaderboard = [...leaderboard].sort((a, b) => {
-    if (lbSort === 'scans') return b.totalScans - a.totalScans;
-    if (lbSort === 'usage') return b.totalUsageMinutes - a.totalUsageMinutes;
-    return b.totalPoints - a.totalPoints;
+  const currentMonthKey = getWatMonthKey();
+  const isMonthFrozen =
+    starterSettings.frozenMonth === currentMonthKey || isEndOfMonthFreezeWindowWat();
+  const showStarterInApp =
+    starterSettings.showInApp && !starterSettings.starterRemoved && !isMonthFrozen;
+
+  const frozenWinnerSummary = useMemo(() => {
+    if (!isMonthFrozen) return null;
+    if (
+      starterSettings.monthlyWinnerSummary &&
+      starterSettings.monthlyWinnerSummary.month === currentMonthKey
+    ) {
+      return starterSettings.monthlyWinnerSummary;
+    }
+    return buildEndOfMonthWinnerSummary(monthlyStats, currentMonthKey);
+  }, [isMonthFrozen, starterSettings.monthlyWinnerSummary, currentMonthKey, monthlyStats]);
+
+  // All eligible real subscribers sorted by Guard Score descending (for true prize eligibility)
+  const allEligibleSubscribers = useMemo(() => {
+    return monthlyStats
+      .filter((s) => isEligibleForTop10(s))
+      .map((s) => ({ ...s, guardScore: getEffectiveGuardScore(s) }))
+      .sort((a, b) => (b.guardScore ?? 0) - (a.guardScore ?? 0));
+  }, [monthlyStats]);
+
+  const realTop10 = useMemo(() => sortTop10Guardians(monthlyStats), [monthlyStats]);
+
+  const allTopUsersDisplay = useMemo(() => {
+    if (frozenWinnerSummary) {
+      return frozenWinnerSummary.topUsers.map((w) => ({
+        id: w.userId,
+        userId: w.userId,
+        name: w.name,
+        profilePicUrl: w.photoURL || '',
+        avatar: w.photoURL || '',
+        city: w.city,
+        state: w.state,
+        totalScans: 0,
+        totalReports: 0,
+        verifiedReports: 0,
+        totalUsageDays: 1,
+        totalUsageMinutes: 0,
+        totalPoints: w.guardScore,
+        guardScore: w.guardScore,
+        month: currentMonthKey,
+        isStarter: false,
+        isRealUser: true,
+      })) as UserUsageStat[];
+    }
+    return buildTopUsersDisplayList(monthlyStats, showStarterInApp);
+  }, [frozenWinnerSummary, monthlyStats, showStarterInApp, currentMonthKey]);
+
+  const top10 = useMemo(() => allTopUsersDisplay.slice(0, 10), [allTopUsersDisplay]);
+  const myRankIndex = allEligibleSubscribers.findIndex((x) => x.userId === user.uid);
+  const myStatRow = monthlyStats.find((x) => x.userId === user.uid) || null;
+  const myGuardScore = myStatRow ? getEffectiveGuardScore(myStatRow) : user.guardScore ?? 0;
+  const tenthPlaceScore = realTop10.length >= 10 ? realTop10[9].guardScore ?? 0 : 0;
+  const pointsNeededToEnterTop10 =
+    realTop10.length < 10
+      ? subInfo.isSubscriber
+        ? 0
+        : Math.max(0, tenthPlaceScore - myGuardScore)
+      : myRankIndex >= 0 && myRankIndex < 10
+      ? 0
+      : Math.max(1, tenthPlaceScore + 1 - myGuardScore);
+
+  const availableNaira = user.availableBalanceNaira ?? user.walletBalance ?? 0;
+  const totalEarnedNaira = user.totalEarnedNaira ?? user.walletBalance ?? 0;
+  const totalReferralEarnings = myReferrals.reduce(
+    (sum, r) => sum + (r.rewardPaid ? Number(r.rewardAmount || 0) : 0),
+    0
+  );
+
+  const displayedCityState = formatCityStateLabel(
+    user.city || location?.city,
+    user.state || user.userState || location?.state
+  );
+  const locationIsStale = isLocationStale7Days(user.locationUpdatedAt);
+  const currentMonthYearLabel = new Date().toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
   });
-  const top10 = sortedLeaderboard.slice(0, 10);
-  const myIndex = sortedLeaderboard.findIndex((x) => x.userId === user.uid);
-  const myStat = myIndex >= 0 ? sortedLeaderboard[myIndex] : null;
-  const leaderPoints = sortedLeaderboard[0]?.totalPoints || 1;
 
   return (
     <div className="flex flex-col min-h-full">
@@ -491,10 +705,10 @@ export const MeTab: React.FC<MeTabProps> = ({
           })}
         </div>
 
-        {/* SECTION 1: PROFILE + WALLET + MY REPORTS */}
+        {/* SECTION 1: PROFILE + LOCATION + MONTHLY RANK + WALLET + MY REPORTS */}
         {section === 'profile' && (
           <div className="space-y-4">
-            {/* Avatar + Wallet Card */}
+            {/* Avatar + Monthly Rank + Wallet Card */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-4">
               <div className="flex items-center gap-4">
                 <div className="relative" data-tutorial-target="profile-avatar-circle">
@@ -521,28 +735,170 @@ export const MeTab: React.FC<MeTabProps> = ({
                     {user.email || user.phone || 'Guard AI Member'}
                   </p>
                   <span className="inline-block mt-1.5 px-2.5 py-0.5 rounded-lg bg-[#00E67A]/15 text-[#00E67A] text-[11px] font-bold">
-                    {activePlan} Plan • {uploadingPhoto ? 'Uploading...' : 'Active'}
+                    {activePlan} Plan • {uploadingPhoto ? 'Uploading to Cloud...' : subInfo.isSubscriber ? 'Active Subscriber' : 'Free Plan'}
                   </span>
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-2xl bg-[#050B14] border border-slate-800 flex items-center justify-between">
+              {/* Location Display Card with GPS / Manual Badge, Edit Location, & 7-Day Update Location */}
+              <div className="p-3.5 rounded-2xl bg-[#050B14] border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <MapPin className="w-4 h-4 text-[#2E9BFF] shrink-0" />
+                    <span className="text-sm font-bold text-white truncate">
+                      {displayedCityState}
+                    </span>
+                    {displayedCityState !== 'Location Not Set' && (
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 flex items-center gap-1 ${
+                          user.locationSource === 'manual'
+                            ? 'bg-[#FFC400]/15 text-[#FFC400]'
+                            : 'bg-[#00E67A]/15 text-[#00E67A]'
+                        }`}
+                      >
+                        {user.locationSource === 'manual' ? (
+                          'Manual'
+                        ) : (
+                          <>
+                            <Navigation className="w-2.5 h-2.5" />
+                            GPS
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {displayedCityState === 'Location Not Set' ? (
+                      <button
+                        type="button"
+                        onClick={() => void onSetMyLocation()}
+                        className="px-2.5 py-1 rounded-lg bg-[#2E9BFF] text-white text-[11px] font-bold cursor-pointer"
+                      >
+                        Set My Location
+                      </button>
+                    ) : locationIsStale ? (
+                      <button
+                        type="button"
+                        onClick={() => void onSetMyLocation()}
+                        className="px-2.5 py-1 rounded-lg bg-[#FFC400] text-slate-950 text-[11px] font-extrabold cursor-pointer"
+                      >
+                        Update Location
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setEditLocOpen(!editLocOpen)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>Edit Location</span>
+                    </button>
+                  </div>
+                </div>
+
+                {locMsg && <p className="text-xs text-[#00E67A] font-semibold">{locMsg}</p>}
+
+                {editLocOpen && (
+                  <form onSubmit={handleSaveManualLocation} className="pt-2 border-t border-slate-800 space-y-2.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      {CITY_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            setManualCity(preset);
+                            if (preset === 'Port Harcourt') setManualState('Rivers');
+                            else if (preset === 'Lagos') setManualState('Lagos');
+                            else if (preset === 'Abuja') setManualState('FCT Abuja');
+                            else if (preset === 'Kano') setManualState('Kano');
+                            else if (preset === 'Enugu') setManualState('Enugu');
+                            else if (preset === 'Ibadan') setManualState('Oyo');
+                            else if (preset === 'Benin City') setManualState('Edo');
+                          }}
+                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border cursor-pointer ${
+                            manualCity === preset
+                              ? 'bg-[#2E9BFF] border-[#2E9BFF] text-white'
+                              : 'bg-[#0C1626] border-slate-700 text-slate-300'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        placeholder="City (e.g. Port Harcourt)"
+                        value={manualCity}
+                        onChange={(e) => setManualCity(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-[#0C1626] border border-slate-700 text-xs text-white"
+                      />
+                      <select
+                        value={manualState}
+                        onChange={(e) => setManualState(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-[#0C1626] border border-slate-700 text-xs text-white"
+                      >
+                        <option value="">Select State</option>
+                        {NIGERIAN_STATES.map((st) => (
+                          <option key={st} value={st}>
+                            {st}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={savingLoc}
+                        className="flex-1 py-2 rounded-xl bg-[#00E67A] text-slate-950 font-extrabold text-xs cursor-pointer"
+                      >
+                        {savingLoc ? 'Saving...' : 'Save Location'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onSetMyLocation()}
+                        className="px-3 py-2 rounded-xl bg-[#2E9BFF]/15 border border-[#2E9BFF]/40 text-[#2E9BFF] font-bold text-xs cursor-pointer"
+                      >
+                        Use Live GPS
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {/* Monthly Rank Status Banner */}
+              <div className="p-3.5 rounded-2xl bg-[#FFC400]/10 border border-[#FFC400]/50 space-y-1.5">
+                <p className="text-xs font-extrabold text-[#FFC400]">
+                  {subInfo.isSubscriber
+                    ? `Your Monthly Rank: #${myRankIndex >= 0 ? myRankIndex + 1 : 'Unranked'} - Guard Score: ${myGuardScore} - Prize If You Stay In Top 10: ₦10,000 - Points Needed To Enter Top 10: ${pointsNeededToEnterTop10}`
+                    : `Your Monthly Rank: Subscriber Only - Guard Score: ${myGuardScore} - Prize If You Stay In Top 10: ₦10,000 - Points Needed To Enter Top 10: ${pointsNeededToEnterTop10}`}
+                </p>
+              </div>
+
+              {/* Wallet Balance: Available + Total Earned */}
+              <div className="p-3.5 rounded-2xl bg-[#050B14] border border-slate-800 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
                   <Wallet className="w-5 h-5 text-[#00E67A]" />
                   <div>
-                    <p className="text-[11px] text-slate-400">Guard AI Wallet Balance</p>
-                    <p className="text-lg font-extrabold font-mono text-white">
-                      ₦{(user.walletBalance ?? 0).toLocaleString()}
+                    <p className="text-[11px] text-slate-400">Guard AI Wallet</p>
+                    <p className="text-base font-extrabold font-mono text-white">
+                      Available: ₦{availableNaira.toLocaleString()} • Total Earned: ₦
+                      {totalEarnedNaira.toLocaleString()}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={onOpenReportModal}
-                  className="px-3 py-2 rounded-xl bg-orange-500 text-white font-bold text-xs cursor-pointer"
+                  className="px-3 py-2 rounded-xl bg-orange-500 text-white font-bold text-xs cursor-pointer shrink-0"
                 >
-                  Earn ₦5,000
+                  Report &amp; Earn
                 </button>
+              </div>
+
+              {/* Report & Earn Subscribers-Only Banner */}
+              <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/35 text-xs font-bold text-orange-300 text-center">
+                Report &amp; Earn: ₦5,000 per verified report - Subscribers Only
               </div>
             </div>
 
@@ -581,13 +937,18 @@ export const MeTab: React.FC<MeTabProps> = ({
                   onChange={(e) => setCity(e.target.value)}
                   className="px-3.5 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white"
                 />
-                <input
-                  type="text"
-                  placeholder="State (e.g. Lagos)"
+                <select
                   value={userState}
                   onChange={(e) => setUserState(e.target.value)}
                   className="px-3.5 py-2.5 rounded-xl bg-[#050B14] border border-slate-800 text-sm text-white"
-                />
+                >
+                  <option value="">Select State</option>
+                  {NIGERIAN_STATES.map((st) => (
+                    <option key={st} value={st}>
+                      {st}
+                    </option>
+                  ))}
+                </select>
                 <input
                   type="text"
                   placeholder="Emergency Contact Phone"
@@ -641,7 +1002,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                           </p>
                           <p className="text-[11px] text-slate-400">
                             {displayName} • Status: {r.status} • Reward:{' '}
-                            {r.paymentStatus === 'paid' ? 'Paid ₦5,000' : 'Unpaid'}
+                            {r.paymentStatus === 'paid' ? 'Paid ₦5,000' : 'Unpaid (₦0)'}
                           </p>
                         </div>
                       </div>
@@ -652,7 +1013,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                             : 'bg-[#FFC400]/15 text-[#FFC400]'
                         }`}
                       >
-                        {r.paymentStatus === 'paid' ? '₦5,000 Paid' : 'Pending'}
+                        {r.paymentStatus === 'paid' ? '₦5,000 Paid' : r.adminDecision === 'approved' ? 'Verified' : r.adminDecision === 'rejected' ? 'Rejected' : 'Pending'}
                       </span>
                     </div>
                   ))}
@@ -692,7 +1053,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               </span>
             </div>
 
-            {/* Exact 3 Plan Cards */}
             <div className="space-y-3">
               {/* Free */}
               <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-2">
@@ -701,7 +1061,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                   <span className="text-xl font-extrabold font-mono text-white">₦0</span>
                 </div>
                 <p className="text-xs text-slate-400">
-                  • 2 combined scans/day (Road, Vehicle &amp; Building) • 1 Family member
+                  • 2 combined scans/day (Road, Vehicle &amp; Building) • 1 Family member • Community reporting only (₦0 reward)
                 </p>
                 <div className="pt-1 text-xs font-bold text-slate-400">
                   {activePlan === 'Free' ? 'Current Active Plan' : 'Included'}
@@ -720,7 +1080,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                   </span>
                 </div>
                 <p className="text-xs text-slate-300">
-                  • Unlimited Daily Scans • 10 Family members • Report &amp; Earn ₦5,000 enabled
+                  • Unlimited Daily Scans • 10 Family members • Report &amp; Earn ₦5,000 • Eligible for Top 10 (₦10,000 Prize) • Referral Payouts Enabled
                 </p>
                 <button
                   type="button"
@@ -743,7 +1103,7 @@ export const MeTab: React.FC<MeTabProps> = ({
                   </span>
                 </div>
                 <p className="text-xs text-slate-300">
-                  • Unlimited Daily Scans • 20 Family members • Priority Police Dispatch • 1 Free Safe Business Listing
+                  • Unlimited Daily Scans • 20 Family members • Priority Police Dispatch • Report &amp; Earn ₦5,000 • Top 10 &amp; Referral Rewards Enabled
                 </p>
                 <button
                   type="button"
@@ -755,7 +1115,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
 
-            {/* Payment Receipt History */}
             {myPayments.length > 0 && (
               <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-2">
                 <h4 className="text-xs font-extrabold text-white">Your OPay Payment Receipts</h4>
@@ -785,16 +1144,19 @@ export const MeTab: React.FC<MeTabProps> = ({
           </div>
         )}
 
-        {/* SECTION 3: REAL TOP 10 MONTHLY LEADERBOARD */}
+        {/* SECTION 3: TOP 10 USERS OF THE MONTH */}
         {section === 'leaderboard' && (
           <div className="space-y-4">
-            <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-3">
+            <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-4 space-y-2">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-base font-extrabold text-white flex items-center gap-2">
                     <Trophy className="w-5 h-5 text-[#FFC400]" />
-                    <span>Top 10 Monthly Leaderboard</span>
+                    <span>Top 10 Users - {currentMonthYearLabel}</span>
                   </h2>
+                  <p className="text-xs font-semibold text-[#00E67A] mt-0.5">
+                    Top 10 Users of the Month Win ₦10,000 - Real Subscribers Only.
+                  </p>
                   <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
                     <Clock className="w-3.5 h-3.5" />
                     <span>Resets at end of month • {countdown}</span>
@@ -809,31 +1171,32 @@ export const MeTab: React.FC<MeTabProps> = ({
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'points', label: 'By Points' },
-                  { id: 'scans', label: 'By Scans' },
-                  { id: 'usage', label: 'By Usage' },
-                ].map((tab) => (
+              {frozenWinnerSummary && (
+                <div className="p-3 rounded-xl bg-[#00E67A]/15 border border-[#00E67A]/50 text-xs font-extrabold text-white flex items-center gap-2">
+                  <Crown className="w-4 h-4 text-[#FFC400] shrink-0" />
+                  <span>
+                    {frozenWinnerSummary.topUsers[0]
+                      ? `Top User of ${frozenWinnerSummary.monthName}: ${frozenWinnerSummary.topUsers[0].name} - ₦10,000`
+                      : `Top User of ${frozenWinnerSummary.monthName}: Real Subscribers Only`}
+                  </span>
+                </div>
+              )}
+              {!subInfo.isSubscriber && (
+                <div className="p-3 rounded-xl bg-[#FF2D55]/10 border border-[#FF2D55]/40 text-xs font-bold text-white flex items-center justify-between gap-2">
+                  <span>Top 10 is for subscribers only. Subscribe to ₦5,000 to compete for ₦10,000</span>
                   <button
-                    key={tab.id}
                     type="button"
-                    onClick={() => setLbSort(tab.id as typeof lbSort)}
-                    className={`py-2 rounded-xl text-xs font-bold cursor-pointer ${
-                      lbSort === tab.id
-                        ? 'bg-[#FFC400] text-slate-950'
-                        : 'bg-[#050B14] text-slate-300 border border-slate-800'
-                    }`}
+                    onClick={() => setSection('subscriptions')}
+                    className="px-3 py-1.5 rounded-lg bg-[#2E9BFF] text-white text-xs font-extrabold shrink-0 cursor-pointer"
                   >
-                    {tab.label}
+                    Subscribe
                   </button>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
 
-            {/* Gold My Row Card: Always show MY picture + MY points at top */}
-            <div className="p-4 rounded-2xl bg-[#FFC400]/10 border-2 border-[#FFC400]/60 space-y-2.5">
+            {/* Gold My Row Card */}
+            <div className="p-4 rounded-2xl bg-[#FFC400]/10 border-2 border-[#FFC400]/60 space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                   <UserAvatar
@@ -846,34 +1209,34 @@ export const MeTab: React.FC<MeTabProps> = ({
                   <div className="min-w-0">
                     <p className="text-xs font-extrabold text-white truncate">{displayName}</p>
                     <p className="text-[11px] font-bold text-[#FFC400]">
-                      {myStat ? `Your Current Rank: #${myIndex + 1}` : 'Your Score This Month'}
+                      {subInfo.isSubscriber
+                        ? `Your Monthly Rank: #${myRankIndex >= 0 ? myRankIndex + 1 : 'Unranked'}`
+                        : 'Subscribers Only'}
                     </p>
                   </div>
                 </div>
-                <span className="text-sm font-mono font-extrabold text-[#FFC400] shrink-0">
-                  {myStat ? myStat.totalPoints : 20} pts
-                </span>
-              </div>
-              {myStat && (
-                <div className="w-full h-2 rounded-full bg-[#050B14] overflow-hidden">
-                  <div
-                    className="h-full bg-[#FFC400]"
-                    style={{
-                      width: `${Math.min(100, Math.round((myStat.totalPoints / leaderPoints) * 100))}%`,
-                    }}
-                  />
+                <div className="text-right shrink-0">
+                  <span className="text-sm font-mono font-extrabold text-[#2E9BFF]">
+                    {myGuardScore} Score
+                  </span>
+                  <p className="text-[10px] font-bold text-[#00E67A]">
+                    Prize: ₦10,000
+                  </p>
                 </div>
-              )}
+              </div>
+              <p className="text-[11px] text-slate-300 font-semibold">
+                Guard Score To Enter Top 10: {pointsNeededToEnterTop10}
+              </p>
             </div>
 
-            {/* Real Table */}
+            {/* Top 10 Users Table */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl overflow-hidden">
               {top10.length === 0 ? (
                 <div className="p-8 text-center space-y-1.5">
                   <Award className="w-10 h-10 text-[#FFC400] mx-auto" />
-                  <p className="text-sm font-bold text-white">No rankings yet this month.</p>
+                  <p className="text-sm font-bold text-white">No ranked subscribers yet this month.</p>
                   <p className="text-xs text-slate-400">
-                    Start scanning to climb the Top 10!
+                    Subscribe and use Guard AI scanners to climb into Top 10!
                   </p>
                 </div>
               ) : (
@@ -882,25 +1245,18 @@ export const MeTab: React.FC<MeTabProps> = ({
                     <thead className="bg-[#050B14] text-slate-400 border-b border-slate-800">
                       <tr>
                         <th className="py-2.5 px-3">Rank</th>
-                        <th className="py-2.5 px-3">Name</th>
-                        <th className="py-2.5 px-2">Scans</th>
-                        <th className="py-2.5 px-2">Usage</th>
-                        <th className="py-2.5 px-2">Verified</th>
-                        <th className="py-2.5 px-2">Points</th>
-                        <th className="py-2.5 px-3">Prize</th>
+                        <th className="py-2.5 px-3">User</th>
+                        <th className="py-2.5 px-3">State</th>
+                        <th className="py-2.5 px-3 text-right">Guard Score</th>
+                        <th className="py-2.5 px-3 text-right">Prize</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/80">
                       {top10.map((row, idx) => {
                         const isMe = row.userId === user.uid;
-                        const prize =
-                          idx === 0
-                            ? '₦10,000 + Gold'
-                            : idx === 1
-                            ? '₦5,000'
-                            : idx === 2
-                            ? '₦2,500'
-                            : '1 Mo Free';
+                        const rowAvatar = isMe
+                          ? displayPhoto
+                          : row.profilePicUrl || row.avatar || '';
                         return (
                           <tr
                             key={row.id}
@@ -909,35 +1265,38 @@ export const MeTab: React.FC<MeTabProps> = ({
                               isMe ? 'bg-[#FFC400]/15' : 'hover:bg-slate-800/40'
                             }`}
                           >
-                            <td className="py-2.5 px-3 font-mono font-bold text-white">
-                              #{idx + 1}
+                            <td className="py-2.5 px-3 font-mono font-bold text-[#FFC400] whitespace-nowrap">
+                              {idx === 0 ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <Crown className="w-3.5 h-3.5 text-[#FFC400] fill-[#FFC400]/30" />
+                                  #1
+                                </span>
+                              ) : (
+                                `#${idx + 1}`
+                              )}
                             </td>
                             <td className="py-2.5 px-3">
                               <div className="flex items-center gap-2">
                                 <UserAvatar
-                                  photoURL={isMe ? displayPhoto : row.avatar}
+                                  photoURL={rowAvatar}
                                   name={isMe ? displayName : row.name}
                                   size="xs"
                                   borderVariant={isMe ? 'purple' : 'green'}
-                                  fallbackVariant={isMe ? 'purple' : 'grey'}
+                                  fallbackVariant={isMe ? 'purple' : 'letter'}
                                 />
                                 <span className="font-semibold text-white truncate max-w-[110px]">
                                   {isMe ? displayName : row.name}
                                 </span>
                               </div>
                             </td>
-                            <td className="py-2.5 px-2 font-mono">{row.totalScans}</td>
-                            <td className="py-2.5 px-2 font-mono">
-                              {Math.round(row.totalUsageMinutes)}m
+                            <td className="py-2.5 px-3 text-slate-300">
+                              {row.state || row.city || 'Nigeria'}
                             </td>
-                            <td className="py-2.5 px-2 font-mono text-[#00E67A]">
-                              {row.verifiedReports}
+                            <td className="py-2.5 px-3 text-right font-mono font-extrabold text-[#2E9BFF]">
+                              {(row.guardScore ?? 0).toLocaleString()}
                             </td>
-                            <td className="py-2.5 px-2 font-mono font-bold text-[#FFC400]">
-                              {row.totalPoints}
-                            </td>
-                            <td className="py-2.5 px-3 text-[11px] font-semibold text-[#00E67A]">
-                              {prize}
+                            <td className="py-2.5 px-3 text-right font-mono font-extrabold text-[#00E67A]">
+                              ₦10,000
                             </td>
                           </tr>
                         );
@@ -947,6 +1306,20 @@ export const MeTab: React.FC<MeTabProps> = ({
                 </div>
               )}
             </div>
+
+            {allTopUsersDisplay.length > 10 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAllListSearch('');
+                  setShowAllUsersModal(true);
+                }}
+                className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#0C1626] hover:bg-slate-900 border border-slate-700 text-xs font-extrabold text-[#2E9BFF] flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>See All Users ({allTopUsersDisplay.length})</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         )}
 
@@ -1002,7 +1375,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
 
-            {/* Real Device Permissions Status */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
@@ -1039,7 +1411,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
 
-            {/* Settings > Help: Replay Tutorial */}
             <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-5 space-y-3">
               <div className="flex items-center gap-2">
                 <HelpCircle className="w-4 h-4 text-[#2E9BFF]" />
@@ -1068,6 +1439,164 @@ export const MeTab: React.FC<MeTabProps> = ({
             </button>
           </div>
         )}
+
+        {/* BOTTOM OF ME TAB (AFTER SETTINGS): INVITE & EARN - REFERRAL */}
+        <div className="bg-[#0C1626] border-2 border-[#00E67A]/40 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Gift className="w-5 h-5 text-[#00E67A]" />
+              <h3 className="text-base font-extrabold text-white">
+                Invite &amp; Earn - Referral
+              </h3>
+            </div>
+            <span className="px-2.5 py-1 rounded-lg bg-[#00E67A]/15 text-[#00E67A] text-[11px] font-extrabold">
+              +₦1,000 + 200 Guard Score
+            </span>
+          </div>
+
+          {!subInfo.isSubscriber && (
+            <div className="p-3 rounded-xl bg-[#FFC400]/10 border border-[#FFC400]/40 text-xs font-bold text-[#FFC400]">
+              Referral rewards only pay when YOU are subscribed.
+            </div>
+          )}
+
+          {/* Code + Copy + KPI Stats */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="col-span-3 sm:col-span-1 p-3 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] text-slate-400 uppercase font-bold">Referral Code</p>
+                <p className="text-base font-mono font-extrabold text-[#00E67A]">
+                  {myReferralCode}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(myReferralCode).catch(() => {});
+                  setCopiedRefCode(true);
+                  window.setTimeout(() => setCopiedRefCode(false), 2000);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedRefCode ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+            <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800 text-center">
+              <p className="text-lg font-mono font-extrabold text-white">{myReferrals.length}</p>
+              <p className="text-[10px] text-slate-400">People Invited</p>
+            </div>
+            <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800 text-center">
+              <p className="text-lg font-mono font-extrabold text-[#00E67A]">
+                ₦{totalReferralEarnings.toLocaleString()}
+              </p>
+              <p className="text-[10px] text-slate-400">Referral Earnings</p>
+            </div>
+          </div>
+
+          {/* Referral Link with Copy / SMS / Share */}
+          <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800 space-y-2">
+            <p className="text-[11px] font-bold text-slate-400">Your Referral Link</p>
+            <p className="text-xs font-mono text-[#2E9BFF] break-all">{referralLink}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(referralLink).catch(() => {});
+                  setCopiedRefLink(true);
+                  window.setTimeout(() => setCopiedRefLink(false), 2000);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedRefLink ? 'Link Copied!' : 'Copy Link'}</span>
+              </button>
+              <a
+                href={`sms:?body=${encodeURIComponent(whatsappInviteText)}`}
+                className="px-3 py-1.5 rounded-lg bg-[#2E9BFF] text-white text-xs font-bold flex items-center gap-1"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>SMS</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  if (navigator.share) {
+                    void navigator.share({ title: 'Join Guard AI', text: whatsappInviteText }).catch(() => {});
+                  } else {
+                    navigator.clipboard?.writeText(whatsappInviteText).catch(() => {});
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Share</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Big Green Invite Friends on WhatsApp Button */}
+          <a
+            href={`https://wa.me/?text=${encodeURIComponent(whatsappInviteText)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-[#00E67A] hover:bg-[#00cf6d] text-slate-950 font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg"
+          >
+            <Share2 className="w-4 h-4" />
+            <span>Invite Friends on WhatsApp</span>
+          </a>
+
+          {/* How It Works */}
+          <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800 space-y-1 text-xs text-slate-300">
+            <p className="font-extrabold text-white">How It Works</p>
+            <p>1. Share your referral code ({myReferralCode}) or link with friends &amp; family.</p>
+            <p>2. They sign up on Guard AI using your link or referral code.</p>
+            <p>3. When they subscribe (₦5,000/mo or ₦35,000/yr) and you are subscribed, you earn ₦1,000 wallet credit + 200 Monthly Guard Score!</p>
+          </div>
+
+          {/* My Referrals List */}
+          <div className="space-y-2">
+            <p className="text-xs font-extrabold text-white">
+              My Referrals ({myReferrals.length})
+            </p>
+            {myReferrals.length === 0 ? (
+              <p className="text-xs text-slate-400">
+                No invited users yet. Tap Invite Friends on WhatsApp to start earning.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {myReferrals.map((r) => (
+                  <div
+                    key={r.id}
+                    className="p-2.5 rounded-xl bg-[#050B14] border border-slate-800 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-bold text-white truncate">
+                        {r.referredName || `User ${r.referredUid.slice(0, 6)}`}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        {r.rewardPaid
+                          ? `Reward Paid: ₦${Number(r.rewardAmount || 1000).toLocaleString()}`
+                          : r.rewardNote || 'Awaiting friend subscription'}
+                      </p>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold shrink-0 ${
+                        r.status === 'Reward Paid'
+                          ? 'bg-[#00E67A]/15 text-[#00E67A]'
+                          : r.status === 'SUBSCRIBED'
+                          ? 'bg-[#2E9BFF]/15 text-[#2E9BFF]'
+                          : 'bg-[#FFC400]/15 text-[#FFC400]'
+                      }`}
+                    >
+                      {r.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
 
         <button
           type="button"
@@ -1159,6 +1688,107 @@ export const MeTab: React.FC<MeTabProps> = ({
                 <span>{submittingPayment ? 'Uploading...' : 'I HAVE PAID - UPLOAD RECEIPT'}</span>
               </button>
             </form>
+          </div>
+        </div>
+      )}
+      {/* See All Users Modal (Positions 11 to 56+ & Full List) */}
+      {showAllUsersModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full max-w-lg max-h-[88vh] flex flex-col bg-[#0C1626] border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Trophy className="w-4 h-4 text-[#FFC400]" />
+                  <span>All Ranked Users ({allTopUsersDisplay.length})</span>
+                </h2>
+                <p className="text-[11px] text-[#00E67A]">
+                  Top 10 Users of the Month Win ₦10,000 - Real Subscribers Only.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllUsersModal(false)}
+                className="w-10 h-10 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
+                aria-label="Close All Users"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                type="text"
+                value={allListSearch}
+                onChange={(e) => setAllListSearch(e.target.value)}
+                placeholder="Search by name or state..."
+                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[#050B14] border border-slate-800 text-xs text-white focus:outline-none focus:border-[#2E9BFF]"
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+              {allTopUsersDisplay
+                .map((row, index) => ({ row, rank: index + 1 }))
+                .filter(({ row }) => {
+                  const q = allListSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    row.name.toLowerCase().includes(q) ||
+                    (row.state || '').toLowerCase().includes(q) ||
+                    (row.city || '').toLowerCase().includes(q)
+                  );
+                })
+                .map(({ row, rank }) => {
+                  const isMe = row.userId === user.uid;
+                  const rowAvatar = isMe ? displayPhoto : row.profilePicUrl || row.avatar || '';
+                  return (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => {
+                        setShowAllUsersModal(false);
+                        onOpenProfile(row.userId);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 p-2.5 rounded-xl border text-left cursor-pointer ${
+                        isMe
+                          ? 'bg-[#FFC400]/15 border-[#FFC400]/50'
+                          : rank <= 10
+                          ? 'bg-[#050B14] border-[#00E67A]/30'
+                          : 'bg-[#050B14] border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-8 text-xs font-mono font-extrabold text-[#FFC400] shrink-0">
+                          {rank === 1 ? '👑 #1' : `#${rank}`}
+                        </span>
+                        <UserAvatar
+                          photoURL={rowAvatar}
+                          name={isMe ? displayName : row.name}
+                          size="xs"
+                          borderVariant={isMe ? 'purple' : 'green'}
+                          fallbackVariant={isMe ? 'purple' : 'letter'}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">
+                            {isMe ? displayName : row.name}
+                          </p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {row.state || row.city || 'Nigeria'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs font-mono font-extrabold text-[#2E9BFF] tabular-nums">
+                          {(row.guardScore ?? 0).toLocaleString()} pts
+                        </p>
+                        {rank <= 10 && (
+                          <p className="text-[10px] font-bold text-[#00E67A]">₦10,000</p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
           </div>
         </div>
       )}

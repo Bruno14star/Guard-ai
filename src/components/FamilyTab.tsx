@@ -14,6 +14,7 @@ import { Users, Plus, AlertTriangle, Trash2, Navigation, VolumeX, X } from 'luci
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { FamilyMember, HumanLocation, PlanType, UserProfile } from '../types';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
+import { awardGuardScoreEvent } from '../utils/guardScore';
 import { ContinuousAlarmController } from '../utils/audioClassifier';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
@@ -43,7 +44,8 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
   onOpenReportModal,
   onOpenSubscriptions,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const resolvedPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, resolvedPhoto);
   const [members, setMembers] = useState<FamilyMember[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [memberName, setMemberName] = useState('');
@@ -57,6 +59,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
   const [routeSummary, setRouteSummary] = useState<string | null>(null);
   const alarmRef = useRef<ContinuousAlarmController | null>(null);
   const [alarmPlaying, setAlarmPlaying] = useState(false);
+  const activeDayCheckedRef = useRef<boolean>(false);
 
   useEffect(() => {
     const q = query(collection(db, 'family_tracking'), where('ownerId', '==', user.uid));
@@ -86,6 +89,20 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
     );
     return () => unsub();
   }, [user.uid]);
+
+  useEffect(() => {
+    if (members.length > 0 && !activeDayCheckedRef.current) {
+      activeDayCheckedRef.current = true;
+      void awardGuardScoreEvent({
+        uid: user.uid,
+        action: 'family_active_day',
+        userName: globalProfile.name || user.fullName,
+        userAvatar: globalProfile.photo || resolvedPhoto,
+        city: location?.city || user.city || '',
+        state: location?.state || user.state || user.userState || '',
+      });
+    }
+  }, [members.length, user.uid, user.fullName, user.city, user.state, user.userState, globalProfile.name, globalProfile.photo, resolvedPhoto, location?.city, location?.state]);
 
   const sosMembers = members.filter((m) => m.status === 'SOS');
 
@@ -139,6 +156,14 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
       setMemberName('');
       setMemberPhone('');
       setAddOpen(false);
+      void awardGuardScoreEvent({
+        uid: user.uid,
+        action: 'family_member_added',
+        userName: globalProfile.name || user.fullName,
+        userAvatar: globalProfile.photo || resolvedPhoto,
+        city: location?.city || user.city || '',
+        state: location?.state || user.state || user.userState || '',
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'family_tracking');
     } finally {
@@ -156,13 +181,36 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
 
   const handleToggleMemberSos = async (m: FamilyMember) => {
     try {
+      const nextStatus = m.status === 'SOS' ? 'Safe' : 'SOS';
       await updateDoc(doc(db, 'family_tracking', m.id), {
-        status: m.status === 'SOS' ? 'Safe' : 'SOS',
+        status: nextStatus,
         lastSeen: serverTimestamp(),
       });
+      if (m.status === 'SOS' && nextStatus === 'Safe') {
+        void awardGuardScoreEvent({
+          uid: user.uid,
+          action: 'family_safe_arrival',
+          userName: globalProfile.name || user.fullName,
+          userAvatar: globalProfile.photo || resolvedPhoto,
+          city: location?.city || user.city || '',
+          state: location?.state || user.state || user.userState || '',
+        });
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `family_tracking/${m.id}`);
     }
+  };
+
+  const handleRouteToMember = (lat: number, lng: number) => {
+    setSelectedRouteDest({ lat, lng });
+    void awardGuardScoreEvent({
+      uid: user.uid,
+      action: 'safe_route',
+      userName: globalProfile.name || user.fullName,
+      userAvatar: globalProfile.photo || resolvedPhoto,
+      city: location?.city || user.city || '',
+      state: location?.state || user.state || user.userState || '',
+    });
   };
 
   const mapPins: MapPinItem[] = members
@@ -177,7 +225,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
       kind: 'family',
       isOnline: m.isOnline,
       isSos: m.status === 'SOS',
-      onClick: () => setSelectedRouteDest({ lat: m.lastLat as number, lng: m.lastLng as number }),
+      onClick: () => handleRouteToMember(m.lastLat as number, m.lastLng as number),
     }));
 
   return (
@@ -251,7 +299,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
           userName={globalProfile.name || user.fullName}
-          userPhotoURL={globalProfile.photo || user.photoURL}
+          userPhotoURL={globalProfile.photo || resolvedPhoto}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}
@@ -330,7 +378,7 @@ export const FamilyTab: React.FC<FamilyTabProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setSelectedRouteDest({ lat: m.lastLat as number, lng: m.lastLng as number })
+                          handleRouteToMember(m.lastLat as number, m.lastLng as number)
                         }
                         className="p-2 rounded-xl bg-[#050B14] border border-slate-700 text-[#2E9BFF] cursor-pointer"
                         title="Route to member"

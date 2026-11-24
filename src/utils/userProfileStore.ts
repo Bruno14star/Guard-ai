@@ -1,15 +1,23 @@
 import { useEffect, useState } from 'react';
 
-export const GUARD_USER_PHOTO_KEY = 'guard_user_photo';
-export const GUARD_USER_NAME_KEY = 'guard_user_name';
 export const GUARD_TUTORIAL_SEEN_KEY = 'guard_tutorial_seen';
 export const GUARD_TUTORIAL_STEP_KEY = 'guard_tutorial_step';
 export const PROFILE_UPDATED_EVENT = 'guard-profile-updated';
+
+// Legacy localStorage keys removed permanently so base64/stale avatars NEVER pollute app state
+const LEGACY_PHOTO_KEY = 'guard_user_photo';
+const LEGACY_NAME_KEY = 'guard_user_name';
 
 export interface GlobalUserProfile {
   name: string;
   photo: string;
 }
+
+// In-memory global cache driven purely by Firestore `profilePicUrl` / `photoURL`
+let inMemoryProfile: GlobalUserProfile = {
+  name: '',
+  photo: '',
+};
 
 function safeGetStorage(key: string): string {
   try {
@@ -36,6 +44,12 @@ function safeRemoveStorage(key: string): void {
   }
 }
 
+// Immediately purge any legacy localStorage base64/photo cache on module load
+if (typeof window !== 'undefined') {
+  safeRemoveStorage(LEGACY_PHOTO_KEY);
+  safeRemoveStorage(LEGACY_NAME_KEY);
+}
+
 export function dispatchGlobalProfileUpdated(): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT));
@@ -43,45 +57,40 @@ export function dispatchGlobalProfileUpdated(): void {
 }
 
 /**
- * Single global profile loader reading from localStorage keys:
- * - "guard_user_photo"
- * - "guard_user_name"
+ * Sets in-memory profile directly from Firestore values (NEVER writes photos to localStorage or base64).
  */
 export function loadUserProfile(fallback?: {
   name?: string | null;
   photo?: string | null;
 }): GlobalUserProfile {
-  let name = safeGetStorage(GUARD_USER_NAME_KEY).trim();
-  let photo = safeGetStorage(GUARD_USER_PHOTO_KEY).trim();
-
-  if (!name && fallback?.name && fallback.name.trim()) {
-    name = fallback.name.trim();
-    safeSetStorage(GUARD_USER_NAME_KEY, name);
-  }
-
-  if (!photo && fallback?.photo && fallback.photo.trim()) {
-    photo = fallback.photo.trim();
-    safeSetStorage(GUARD_USER_PHOTO_KEY, photo);
-  }
-
+  const nextName = (fallback?.name || '').trim() || inMemoryProfile.name || 'Guard AI Member';
+  const nextPhoto = (fallback?.photo || '').trim() || inMemoryProfile.photo || '';
   return {
-    name: name || 'Guard AI Member',
-    photo,
+    name: nextName,
+    photo: nextPhoto,
   };
 }
 
-export function saveUserProfilePhoto(photoDataUrl: string): boolean {
-  const ok = safeSetStorage(GUARD_USER_PHOTO_KEY, photoDataUrl);
+export function saveUserProfilePhoto(cloudPhotoUrl: string): boolean {
+  const trimmed = cloudPhotoUrl.trim();
+  if (!trimmed) return false;
+  inMemoryProfile = { ...inMemoryProfile, photo: trimmed };
+  safeRemoveStorage(LEGACY_PHOTO_KEY);
   dispatchGlobalProfileUpdated();
-  return ok;
+  return true;
 }
 
 export function saveUserProfileName(fullName: string): boolean {
   const cleaned = fullName.trim();
   if (!cleaned) return false;
-  const ok = safeSetStorage(GUARD_USER_NAME_KEY, cleaned);
+  inMemoryProfile = { ...inMemoryProfile, name: cleaned };
   dispatchGlobalProfileUpdated();
-  return ok;
+  return true;
+}
+
+export function clearInMemoryUserProfileOnSignOut(): void {
+  inMemoryProfile = { name: '', photo: '' };
+  dispatchGlobalProfileUpdated();
 }
 
 export function seedGlobalUserProfile(
@@ -89,15 +98,13 @@ export function seedGlobalUserProfile(
   photoUrl?: string | null
 ): void {
   let changed = false;
-  const existingName = safeGetStorage(GUARD_USER_NAME_KEY).trim();
-  const existingPhoto = safeGetStorage(GUARD_USER_PHOTO_KEY).trim();
-
-  if (!existingName && fullName && fullName.trim()) {
-    safeSetStorage(GUARD_USER_NAME_KEY, fullName.trim());
+  if (fullName && fullName.trim() && inMemoryProfile.name !== fullName.trim()) {
+    inMemoryProfile = { ...inMemoryProfile, name: fullName.trim() };
     changed = true;
   }
-  if (!existingPhoto && photoUrl && photoUrl.trim()) {
-    safeSetStorage(GUARD_USER_PHOTO_KEY, photoUrl.trim());
+  // Never overwrite existing non-empty Firestore photo with empty string
+  if (photoUrl && photoUrl.trim() && inMemoryProfile.photo !== photoUrl.trim()) {
+    inMemoryProfile = { ...inMemoryProfile, photo: photoUrl.trim() };
     changed = true;
   }
   if (changed) dispatchGlobalProfileUpdated();
@@ -132,84 +139,96 @@ export function saveTutorialStep(stepIndex: number): void {
 }
 
 /**
- * Compresses an uploaded profile image to max 500x500 pixels and max 500KB
- * for instant localStorage persistence ("guard_user_photo"), plus a <= 140KB
- * variant if optionally mirrored to Firestore.
+ * Compresses an uploaded image file to max 800x800 pixels and max 500KB JPEG Blob
+ * ready for permanent Firebase Storage upload at `profilePictures/{userId}.jpg`.
+ * Uses createImageBitmap when available (zero URL.createObjectURL usage).
  */
-export function compressImageTo500(
-  file: File
-): Promise<{ localDataUrl: string; firestoreSafeDataUrl: string }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Could not read selected image file.'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Invalid image file.'));
-      img.onload = () => {
-        const MAX_DIM = 500;
-        const scale = Math.min(1, MAX_DIM / Math.max(img.width || 1, img.height || 1));
-        const width = Math.max(1, Math.round(img.width * scale));
-        const height = Math.max(1, Math.round(img.height * scale));
+export async function compressImageToJpegBlob(file: File): Promise<Blob> {
+  const MAX_DIM = 800;
+  const MAX_BYTES = 500 * 1024;
 
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Canvas context unavailable.'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
+  let drawSource: CanvasImageSource;
+  let srcWidth = 800;
+  let srcHeight = 800;
+  let bitmapToClose: ImageBitmap | null = null;
 
-        const maxBytesLocal = 500 * 1024;
-        const maxCharsFirestore = 140000;
+  if (typeof createImageBitmap === 'function') {
+    const bmp = await createImageBitmap(file);
+    drawSource = bmp;
+    srcWidth = bmp.width || 800;
+    srcHeight = bmp.height || 800;
+    bitmapToClose = bmp;
+  } else {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Could not read selected image file.'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onerror = () => reject(new Error('Invalid image file.'));
+      el.onload = () => resolve(el);
+      el.src = dataUrl;
+    });
+    drawSource = img;
+    srcWidth = img.naturalWidth || img.width || 800;
+    srcHeight = img.naturalHeight || img.height || 800;
+  }
 
-        let quality = 0.88;
-        let localDataUrl = canvas.toDataURL('image/jpeg', quality);
-        while (localDataUrl.length * 0.75 > maxBytesLocal && quality > 0.25) {
-          quality -= 0.1;
-          localDataUrl = canvas.toDataURL('image/jpeg', quality);
-        }
+  try {
+    const scale = Math.min(1, MAX_DIM / Math.max(1, srcWidth, srcHeight));
+    let width = Math.max(1, Math.round(srcWidth * scale));
+    let height = Math.max(1, Math.round(srcHeight * scale));
 
-        // If still > 500KB at low quality, downscale canvas slightly
-        if (localDataUrl.length * 0.75 > maxBytesLocal) {
-          const smallCanvas = document.createElement('canvas');
-          smallCanvas.width = Math.min(360, width);
-          smallCanvas.height = Math.min(360, height);
-          const sctx = smallCanvas.getContext('2d');
-          sctx?.drawImage(canvas, 0, 0, smallCanvas.width, smallCanvas.height);
-          localDataUrl = smallCanvas.toDataURL('image/jpeg', 0.78);
-        }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas context unavailable.');
+    }
+    ctx.drawImage(drawSource, 0, 0, width, height);
 
-        // Compact <= 140KB version for Firestore sync limit (<= 150000 chars)
-        let firestoreSafeDataUrl = localDataUrl;
-        if (firestoreSafeDataUrl.length > maxCharsFirestore) {
-          const fsCanvas = document.createElement('canvas');
-          const fsSize = 220;
-          const fsScale = Math.min(1, fsSize / Math.max(width, height));
-          fsCanvas.width = Math.max(1, Math.round(width * fsScale));
-          fsCanvas.height = Math.max(1, Math.round(height * fsScale));
-          const fctx = fsCanvas.getContext('2d');
-          fctx?.drawImage(canvas, 0, 0, fsCanvas.width, fsCanvas.height);
-          let fq = 0.78;
-          firestoreSafeDataUrl = fsCanvas.toDataURL('image/jpeg', fq);
-          while (firestoreSafeDataUrl.length > maxCharsFirestore && fq > 0.3) {
-            fq -= 0.1;
-            firestoreSafeDataUrl = fsCanvas.toDataURL('image/jpeg', fq);
-          }
-        }
+    const toJpegBlob = (c: HTMLCanvasElement, q: number) =>
+      new Promise<Blob>((resolve, reject) => {
+        c.toBlob(
+          (b) => {
+            if (b) resolve(b);
+            else reject(new Error('Failed to encode compressed JPEG.'));
+          },
+          'image/jpeg',
+          q
+        );
+      });
 
-        resolve({ localDataUrl, firestoreSafeDataUrl });
-      };
-      img.src = String(reader.result || '');
-    };
-    reader.readAsDataURL(file);
-  });
+    let quality = 0.88;
+    let blob = await toJpegBlob(canvas, quality);
+    while (blob.size > MAX_BYTES && quality > 0.28) {
+      quality -= 0.12;
+      blob = await toJpegBlob(canvas, quality);
+    }
+
+    if (blob.size > MAX_BYTES) {
+      width = Math.min(480, width);
+      height = Math.min(480, height);
+      const small = document.createElement('canvas');
+      small.width = width;
+      small.height = height;
+      const sctx = small.getContext('2d');
+      sctx?.drawImage(canvas, 0, 0, width, height);
+      blob = await toJpegBlob(small, 0.78);
+    }
+
+    return blob;
+  } finally {
+    bitmapToClose?.close();
+  }
 }
 
 /**
- * Reactive hook backed by loadUserProfile() so every component updates
- * instantly when "guard_user_photo" or "guard_user_name" changes.
+ * Reactive hook driven strictly by Firestore `profilePicUrl`/`photoURL` + instant in-memory sync
+ * (NO localStorage photo caching, NO base64 persistence).
  */
 export function useGlobalUserProfile(
   fallbackName?: string | null,
@@ -227,10 +246,8 @@ export function useGlobalUserProfile(
     };
 
     window.addEventListener(PROFILE_UPDATED_EVENT, handleSync);
-    window.addEventListener('storage', handleSync);
     return () => {
       window.removeEventListener(PROFILE_UPDATED_EVENT, handleSync);
-      window.removeEventListener('storage', handleSync);
     };
   }, [fallbackName, fallbackPhoto]);
 

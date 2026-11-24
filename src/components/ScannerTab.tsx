@@ -45,8 +45,10 @@ import {
   computeSafeVehicleScore,
   estimateGunshotDistanceMeters,
   headingToSector,
+  isNightWatchWindowWat,
   offsetLatLng,
 } from '../utils/geoPhysics';
+import { awardGuardScoreEvent, GuardScoreAction } from '../utils/guardScore';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap, MapPinItem } from './GuardMap';
 import { AdBanner } from './AdBanner';
@@ -85,7 +87,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   onOpenReportModal,
   onOpenSubscriptions,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const resolvedPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfileResolved = useGlobalUserProfile(user.fullName, resolvedPhoto);
   const [isScanning, setIsScanning] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready to scan with live sensors.');
   const [liveAudioFrame, setLiveAudioFrame] = useState<AudioAnalysisFrame | null>(null);
@@ -141,6 +144,20 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   const autoStopTimerRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
   const alarmRef = useRef<ContinuousAlarmController | null>(null);
+  const roadScanStartMsRef = useRef<number>(0);
+  const roadThreatSeenRef = useRef<boolean>(false);
+  const buildingThreatSeenRef = useRef<boolean>(false);
+
+  const triggerScore = (action: GuardScoreAction) => {
+    void awardGuardScoreEvent({
+      uid: user.uid,
+      action,
+      userName: globalProfileResolved.name || user.fullName,
+      userAvatar: globalProfileResolved.photo || resolvedPhoto,
+      city: location?.city || user.city || '',
+      state: location?.state || user.state || user.userState || '',
+    });
+  };
 
   // Load past Road scans for user
   useEffect(() => {
@@ -321,6 +338,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         const threatPos = offsetLatLng(location.lat, location.lng, dist, headingDeg);
 
         if (mode === 'road') {
+          roadThreatSeenRef.current = true;
           setRoadThreatFlag({
             id: `threat-${Date.now()}`,
             lat: threatPos.lat,
@@ -353,7 +371,9 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
             distance: dist,
             direction: sector,
           });
+          triggerScore('night_watch_threat');
         } else if (mode === 'building_resonance') {
+          buildingThreatSeenRef.current = true;
           setBuildingBanner(
             `Loud Gunshot Audio Resonance Detected (${Math.round(
               frame.gunshotConfidence * 100
@@ -434,7 +454,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   // Main SCAN toggle handler
   const handleToggleScan = async () => {
     if (isScanning) {
+      const wasRoad = subTab === 'road';
+      const ranLongEnough = Date.now() - roadScanStartMsRef.current >= 5000;
+      const hadThreat = roadThreatSeenRef.current;
       stopAllSensors();
+      if (wasRoad && ranLongEnough && !hadThreat) {
+        triggerScore('road_safe_finish');
+      }
+      roadScanStartMsRef.current = 0;
       setStatusMsg('Scan stopped.');
       return;
     }
@@ -447,6 +474,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     setBuildingBanner(null);
 
     if (subTab === 'road') {
+      roadScanStartMsRef.current = Date.now();
+      roadThreatSeenRef.current = false;
       setStatusMsg('Listening with live microphone & YAMNet acoustic engine...');
       try {
         await startAcousticListener('road');
@@ -455,13 +484,18 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
           sensorValue: 0,
           confidence: 0,
         });
+        triggerScore('road_scan');
         // Auto-stop after 5 mins for battery protection
         autoStopTimerRef.current = window.setTimeout(() => {
+          const safeFinish = !roadThreatSeenRef.current;
           stopAllSensors();
+          if (safeFinish) triggerScore('road_safe_finish');
+          roadScanStartMsRef.current = 0;
           setStatusMsg('Road Scan auto-stopped after 5 minutes to protect battery.');
         }, 5 * 60 * 1000);
       } catch {
         stopAllSensors();
+        roadScanStartMsRef.current = 0;
         setStatusMsg('Microphone permission required for Road Scan.');
       }
     } else if (subTab === 'vehicle') {
@@ -492,9 +526,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
             safeScore: safeCalc.score,
             confidence: safeCalc.score,
           });
+          triggerScore('vehicle_scan');
+          if (hasWeaponVisual) {
+            triggerScore('vehicle_stolen_avoid');
+          }
         },
       });
     } else if (subTab === 'building') {
+      buildingThreatSeenRef.current = false;
       if (buildingMode === 'resonance') {
         setStatusMsg('Audio Resonance Check active (20s)...');
         await startAcousticListener('building_resonance').catch(() => {});
@@ -515,6 +554,10 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
               status: 'Resonance Check Completed',
               confidence: 0.72,
             });
+            triggerScore('building_scan');
+            if (buildingThreatSeenRef.current) {
+              triggerScore('building_danger_avoid');
+            }
           }
         }, 1000);
       } else {
@@ -524,6 +567,9 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
           runCocoOnFinish: true,
           onFinish: async (objects) => {
             stopAllSensors();
+            const hasVisibleDanger = objects.some((o) =>
+              ['knife', 'scissors'].includes(o.toLowerCase())
+            );
             setBuildingBanner(
               objects.length > 0
                 ? `Visible scan complete (${objects.join(', ')}).`
@@ -533,14 +579,24 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
               buildingLat: location?.lat ?? 0,
               buildingLng: location?.lng ?? 0,
               floorsDetected: buildingFloorsEst,
-              status: 'Building Visible Scan Clear',
+              status: hasVisibleDanger ? 'Visible Weapon Warning' : 'Building Visible Scan Clear',
               confidence: 0.8,
             });
+            triggerScore('building_scan');
+            if (hasVisibleDanger || buildingThreatSeenRef.current) {
+              triggerScore('building_danger_avoid');
+            }
           },
         });
       }
     } else if (subTab === 'night_watch') {
-      setStatusMsg('Night Watch Armed (100m Danger Zone + Continuous Alarm)');
+      const inNightWindow = isNightWatchWindowWat();
+      setStatusMsg(
+        inNightWindow
+          ? 'Night Watch Armed (100m Danger Zone +50 Guard Score 7pm–6am WAT)'
+          : 'Night Watch Armed (Guard Score +50 applies strictly 7:00 PM – 6:00 AM WAT)'
+      );
+      triggerScore('night_watch_scan');
       await startAcousticListener('night_watch').catch(() => {});
       await startCameraCheck({
         checkDarkness: true,
@@ -563,6 +619,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
       direction: confirmPrompt.sector,
     });
     if (!confirmed) {
+      roadThreatSeenRef.current = false;
       setRoadThreatFlag(null);
     }
     setConfirmPrompt(null);
@@ -581,6 +638,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
       ((location.heading ?? 0) + 180) % 360
     );
     setDerouteDest(safeOffset);
+    triggerScore('safe_route');
   };
 
   const handleStopNightAlarm = () => {
@@ -713,8 +771,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         <GuardMap
           userLat={location?.lat ?? null}
           userLng={location?.lng ?? null}
-          userName={globalProfile.name || user.fullName}
-          userPhotoURL={globalProfile.photo || user.photoURL}
+          userName={globalProfileResolved.name || user.fullName}
+          userPhotoURL={globalProfileResolved.photo || resolvedPhoto}
           addressLabel={location?.formattedAddress || null}
           movementMode={location?.movementMode || 'Walking'}
           pins={mapPins}

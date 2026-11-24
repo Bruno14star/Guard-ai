@@ -161,7 +161,11 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
           <>
             <div className="flex items-center gap-4">
               <UserAvatar
-                photoURL={targetUserId === currentUid ? globalProfile.photo || profile.photoURL : profile.photoURL}
+                photoURL={
+                  targetUserId === currentUid
+                    ? globalProfile.photo || profile.profilePicUrl || profile.photoURL
+                    : profile.profilePicUrl || profile.photoURL
+                }
                 name={targetUserId === currentUid ? globalProfile.name || profile.fullName : profile.fullName}
                 size="lg"
                 borderVariant={targetUserId === currentUid ? 'purple' : 'green'}
@@ -178,7 +182,9 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                 <p className="text-xs text-slate-300 flex items-center gap-1 mt-1">
                   <MapPin className="w-3.5 h-3.5 text-[#2E9BFF]" />
                   <span>
-                    {profile.city || profile.userState || 'Nigeria'}
+                    {profile.city && (profile.state || profile.userState)
+                      ? `${profile.city}, ${profile.state || profile.userState}`
+                      : profile.city || profile.state || profile.userState || 'Location Not Set'}
                   </span>
                 </p>
               </div>

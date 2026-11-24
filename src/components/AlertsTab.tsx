@@ -3,15 +3,18 @@ import {
   collection,
   doc,
   onSnapshot,
-  orderBy,
   query,
+  serverTimestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
-import { Bell, CheckCircle2, MapPin, X } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, Flag, MapPin, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { AlertItem, HumanLocation, UserProfile } from '../types';
+import { FALSE_REPORT_HIDE_THRESHOLD } from '../utils/antiSpam';
 import { formatDistanceLabel, haversineMeters } from '../utils/geoPhysics';
+import { awardGuardScoreEvent } from '../utils/guardScore';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { GuardMap } from './GuardMap';
 import { UserAvatar } from './UserAvatar';
@@ -30,9 +33,12 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
   onRefreshLocation,
   onOpenReportModal,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const resolvedPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, resolvedPhoto);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
+  const [flagBusyId, setFlagBusyId] = useState<string | null>(null);
+  const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(
@@ -49,6 +55,7 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
               id: d.id,
               userId: data.userId,
               userName: data.userName,
+              userProfilePic: data.userProfilePic || '',
               type: data.type || 'Alert',
               title: data.title,
               description: data.description,
@@ -62,9 +69,14 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
               videoUrl: data.videoUrl,
               photoUrl: data.photoUrl,
               verifiedByGuardAI: Boolean(data.verifiedByGuardAI),
+              reportId: data.reportId,
+              falseCount: Number(data.falseCount || 0),
+              falseBy: Array.isArray(data.falseBy) ? data.falseBy : [],
+              isHidden: Boolean(data.isHidden),
               createdAt: data.createdAt,
             };
           })
+          .filter((a) => !a.isHidden && (a.falseCount || 0) < FALSE_REPORT_HIDE_THRESHOLD)
           .sort((a, b) => {
             const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
             const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
@@ -85,8 +97,95 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
       if (selectedAlert?.id === alert.id) {
         setSelectedAlert({ ...alert, status: 'Resolved' });
       }
+      if (alert.userId !== user.uid) {
+        void awardGuardScoreEvent({
+          uid: user.uid,
+          action: 'community_verification',
+          userName: globalProfile.name || user.fullName,
+          userAvatar: globalProfile.photo || resolvedPhoto,
+          city: location?.city || user.city || '',
+          state: location?.state || user.state || user.userState || '',
+        });
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `alerts/${alert.id}`);
+    }
+  };
+
+  const handleMarkFalse = async (alert: AlertItem) => {
+    const existingVoters = Array.isArray(alert.falseBy) ? alert.falseBy : [];
+    if (existingVoters.includes(user.uid)) {
+      setFeedbackMsg('You already marked this alert as False.');
+      window.setTimeout(() => setFeedbackMsg(null), 3500);
+      return;
+    }
+
+    setFlagBusyId(alert.id);
+    try {
+      const nextFalseBy = [...existingVoters, user.uid];
+      const nextCount = nextFalseBy.length;
+      const shouldAutoHide = nextCount >= FALSE_REPORT_HIDE_THRESHOLD;
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'alerts', alert.id), {
+        falseBy: nextFalseBy,
+        falseCount: nextCount,
+        isHidden: shouldAutoHide,
+        verifiedByGuardAI: !shouldAutoHide,
+        status: shouldAutoHide ? 'Resolved' : alert.status,
+      });
+
+      batch.set(doc(db, 'report_false_votes', `${alert.id}_${user.uid}`), {
+        alertId: alert.id,
+        reportId: alert.reportId || alert.id,
+        voterId: user.uid,
+        reporterId: alert.userId || '',
+        createdAt: serverTimestamp(),
+      });
+
+      if (shouldAutoHide && alert.userId) {
+        batch.update(doc(db, 'users', alert.userId), {
+          flaggedReporter: true,
+          flaggedReportId: alert.id,
+          flaggedAt: serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+
+      if (alert.userId !== user.uid) {
+        void awardGuardScoreEvent({
+          uid: user.uid,
+          action: 'community_verification',
+          userName: globalProfile.name || user.fullName,
+          userAvatar: globalProfile.photo || resolvedPhoto,
+          city: location?.city || user.city || '',
+          state: location?.state || user.state || user.userState || '',
+        });
+      }
+
+      if (shouldAutoHide) {
+        setSelectedAlert(null);
+        setFeedbackMsg(
+          '3 users marked this report False — alert auto-hidden and reporter flagged.'
+        );
+      } else {
+        if (selectedAlert?.id === alert.id) {
+          setSelectedAlert({
+            ...alert,
+            falseBy: nextFalseBy,
+            falseCount: nextCount,
+          });
+        }
+        setFeedbackMsg(
+          `Marked False (${nextCount}/${FALSE_REPORT_HIDE_THRESHOLD}). At 3 flags it auto-hides.`
+        );
+      }
+      window.setTimeout(() => setFeedbackMsg(null), 4500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `alerts/${alert.id}`);
+    } finally {
+      setFlagBusyId(null);
     }
   };
 
@@ -100,7 +199,7 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
               <span>Verified Alerts</span>
             </h1>
             <p className="text-xs text-slate-400">
-              Only threats verified by Guard AI &amp; Admin appear here
+              Pending reports stay hidden until Admin verifies • 3 False flags auto-hide
             </p>
           </div>
           <button
@@ -111,6 +210,13 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
             Report &amp; Earn ₦5,000
           </button>
         </div>
+
+        {feedbackMsg && (
+          <div className="p-3 rounded-xl bg-[#FFC400]/15 border border-[#FFC400]/45 text-xs font-semibold text-[#FFC400] flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{feedbackMsg}</span>
+          </div>
+        )}
 
         {alerts.length === 0 ? (
           <div className="bg-[#0C1626] border border-slate-800 rounded-2xl p-8 text-center space-y-2">
@@ -129,6 +235,8 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
                       haversineMeters(location.lat, location.lng, a.lat as number, a.lng as number)
                     )
                   : null;
+              const alreadyMarkedFalse = (a.falseBy || []).includes(user.uid);
+              const falseCount = a.falseCount || 0;
               return (
                 <div
                   key={a.id}
@@ -138,7 +246,11 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <UserAvatar
-                        photoURL={a.userId === user.uid ? globalProfile.photo : undefined}
+                        photoURL={
+                          a.userId === user.uid
+                            ? globalProfile.photo || resolvedPhoto
+                            : a.userProfilePic || undefined
+                        }
                         name={a.userId === user.uid ? globalProfile.name : a.userName || 'Reporter'}
                         size="xs"
                         borderVariant={a.userId === user.uid ? 'purple' : 'none'}
@@ -168,20 +280,42 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
                     <span>{a.address}</span>
                   </p>
                   {a.description && <p className="text-xs text-slate-300">{a.description}</p>}
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
                     <span>{dist || a.incidentState || 'Verified Location'}</span>
-                    {a.status !== 'Resolved' && (
+                    <div className="flex items-center gap-1.5">
                       <button
                         type="button"
+                        disabled={alreadyMarkedFalse || flagBusyId === a.id}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleMarkSafe(a);
+                          void handleMarkFalse(a);
                         }}
-                        className="px-2.5 py-1 rounded-lg bg-[#00E67A]/15 text-[#00E67A] font-bold hover:bg-[#00E67A]/25 cursor-pointer"
+                        className={`px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 cursor-pointer disabled:opacity-60 ${
+                          alreadyMarkedFalse
+                            ? 'bg-slate-800 text-slate-400'
+                            : 'bg-[#FF2D55]/15 text-[#FF2D55] hover:bg-[#FF2D55]/25'
+                        }`}
                       >
-                        Mark Safe
+                        <Flag className="w-3 h-3" />
+                        <span>
+                          {alreadyMarkedFalse
+                            ? `Flagged False (${falseCount}/3)`
+                            : `False (${falseCount}/3)`}
+                        </span>
                       </button>
-                    )}
+                      {a.status !== 'Resolved' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleMarkSafe(a);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#00E67A]/15 text-[#00E67A] font-bold hover:bg-[#00E67A]/25 cursor-pointer"
+                        >
+                          Mark Safe
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -214,7 +348,7 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
               userLat={selectedAlert.lat ?? location?.lat ?? null}
               userLng={selectedAlert.lng ?? location?.lng ?? null}
               userName={globalProfile.name || user.fullName}
-              userPhotoURL={globalProfile.photo || user.photoURL}
+              userPhotoURL={globalProfile.photo || resolvedPhoto}
               addressLabel={selectedAlert.address || null}
               pins={
                 Number.isFinite(selectedAlert.lat) && Number.isFinite(selectedAlert.lng)
@@ -234,15 +368,33 @@ export const AlertsTab: React.FC<AlertsTabProps> = ({
               heightClassName="h-[320px]"
             />
 
-            {selectedAlert.status !== 'Resolved' && (
+            <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => handleMarkSafe(selectedAlert)}
-                className="w-full min-h-[44px] py-2.5 rounded-xl bg-[#00E67A] text-slate-950 font-extrabold text-sm cursor-pointer"
+                disabled={
+                  (selectedAlert.falseBy || []).includes(user.uid) ||
+                  flagBusyId === selectedAlert.id
+                }
+                onClick={() => void handleMarkFalse(selectedAlert)}
+                className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-[#FF2D55]/15 border border-[#FF2D55]/40 text-[#FF2D55] font-extrabold text-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
-                Mark Area Safe
+                <Flag className="w-4 h-4" />
+                <span>
+                  {(selectedAlert.falseBy || []).includes(user.uid)
+                    ? `Marked False (${selectedAlert.falseCount || 0}/3)`
+                    : `Mark False (${selectedAlert.falseCount || 0}/3)`}
+                </span>
               </button>
-            )}
+              {selectedAlert.status !== 'Resolved' && (
+                <button
+                  type="button"
+                  onClick={() => void handleMarkSafe(selectedAlert)}
+                  className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-[#00E67A] text-slate-950 font-extrabold text-sm cursor-pointer"
+                >
+                  Mark Area Safe
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

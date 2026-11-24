@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  addDoc,
   collection,
   doc,
   getDocs,
@@ -9,12 +8,19 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { Video, Camera, X, CheckCircle2, Square, CircleDot, AlertTriangle } from 'lucide-react';
-import { db, handleFirestoreError, OperationType, storage } from '../firebase';
+import { Video, Camera, X, CheckCircle2, Square, CircleDot, AlertTriangle, Clock, Crown } from 'lucide-react';
+import { auth, db, handleFirestoreError, OperationType, storage } from '../firebase';
 import { HumanLocation, UserProfile } from '../types';
+import {
+  checkReportEligibility,
+  getDeviceAuditInfo,
+  toMillisSafe,
+} from '../utils/antiSpam';
 import { computeGuardAiVerificationScore, haversineMeters } from '../utils/geoPhysics';
+import { getEffectiveSubscription } from '../utils/guardScore';
 import { useGlobalUserProfile } from '../utils/userProfileStore';
 import { UserAvatar } from './UserAvatar';
 
@@ -24,9 +30,10 @@ interface ReportEarnModalProps {
   user: UserProfile;
   location: HumanLocation | null;
   usageStatDocId: string | null;
+  onOpenSubscriptions?: () => void;
 }
 
-const INCIDENT_TYPES = ['Gunshot', 'Robbery', 'Kidnapping', 'Accident', 'Fire', 'Other'];
+const INCIDENT_TYPES = ['Gunshot', 'Robbery', 'Kidnapping', 'Suspicious', 'Accident', 'Fire', 'Other'];
 
 export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   open,
@@ -34,10 +41,13 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   user,
   location,
   usageStatDocId,
+  onOpenSubscriptions,
 }) => {
-  const globalProfile = useGlobalUserProfile(user.fullName, user.photoURL);
+  const userPhoto = user.profilePicUrl || user.photoURL || '';
+  const globalProfile = useGlobalUserProfile(user.fullName, userPhoto);
   const reporterName = globalProfile.name || user.fullName;
-  const reporterPhoto = globalProfile.photo || user.photoURL || '';
+  const reporterPhoto = globalProfile.photo || userPhoto;
+
   const [incidentType, setIncidentType] = useState('Gunshot');
   const [description, setDescription] = useState('');
   const [photoDataUrl, setPhotoDataUrl] = useState<string>('');
@@ -49,7 +59,10 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   const [audioMatchScore, setAudioMatchScore] = useState<number>(0.45);
   const [submitting, setSubmitting] = useState(false);
   const [resultMsg, setResultMsg] = useState<string | null>(null);
+  const [freeUserPostSubmitMsg, setFreeUserPostSubmitMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recentReportTimesMs, setRecentReportTimesMs] = useState<number[]>([]);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -57,6 +70,11 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   const chunksRef = useRef<BlobPart[]>([]);
   const timerRef = useRef<number | null>(null);
   const peakLevelRef = useRef<number>(0);
+
+  const subInfo = getEffectiveSubscription(user);
+  const isSubscriber = subInfo.isSubscriber;
+  const suspendedUntilMs = toMillisSafe(user.reportEarnSuspendedUntil);
+  const isRewardSuspended = suspendedUntilMs > Date.now() || (user.falseReportsThisMonth || 0) >= 3;
 
   const stopCameraStream = () => {
     if (timerRef.current) {
@@ -72,12 +90,40 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
       stopCameraStream();
       setRecording(false);
       setResultMsg(null);
+      setFreeUserPostSubmitMsg(null);
       setError(null);
+      return;
     }
-    return () => stopCameraStream();
-  }, [open]);
+
+    setNowTick(Date.now());
+    const tickId = window.setInterval(() => setNowTick(Date.now()), 1000);
+
+    getDocs(query(collection(db, 'incident_reports'), where('userId', '==', user.uid)))
+      .then((snap) => {
+        const times = snap.docs
+          .filter((d) => d.data().incidentType !== 'SOS Emergency')
+          .map((d) => toMillisSafe(d.data().createdAt))
+          .filter((t) => t > 0);
+        setRecentReportTimesMs(times);
+      })
+      .catch(() => {});
+
+    return () => {
+      clearInterval(tickId);
+      stopCameraStream();
+    };
+  }, [open, user.uid]);
 
   if (!open) return null;
+
+  const eligibility = checkReportEligibility({
+    role: user.role,
+    userCreatedAt: user.createdAt,
+    authCreationTime: auth.currentUser?.metadata?.creationTime,
+    lastReportAt: user.lastReportAt,
+    recentReportTimesMs,
+    nowMs: nowTick,
+  });
 
   const startLiveRecording = async () => {
     setError(null);
@@ -97,7 +143,6 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
         await videoRef.current.play().catch(() => {});
       }
 
-      // Measure real audio energy during recording
       try {
         const AudioCtx =
           window.AudioContext ||
@@ -140,7 +185,6 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
         setVideoBlob(blob);
         setVideoPreviewUrl(URL.createObjectURL(blob));
         setRecordedAtMs(Date.now());
-        // Probabilistic audio confidence based on real acoustic impulse energy (never 100%)
         const conf = Math.min(0.92, Math.max(0.35, 0.4 + peakLevelRef.current * 0.55));
         setAudioMatchScore(Number(conf.toFixed(2)));
         stopCameraStream();
@@ -197,8 +241,22 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    const latestEligibility = checkReportEligibility({
+      role: user.role,
+      userCreatedAt: user.createdAt,
+      authCreationTime: auth.currentUser?.metadata?.creationTime,
+      lastReportAt: user.lastReportAt,
+      recentReportTimesMs,
+      nowMs: Date.now(),
+    });
+    if (!latestEligibility.allowed) {
+      setError(latestEligibility.message);
+      return;
+    }
+
     if (!videoBlob || recordSeconds < 15) {
-      setError('Live in-app video of at least 15 seconds is compulsory to earn ₦5,000.');
+      setError('Live in-app video of at least 15 seconds is compulsory to verify your report.');
       return;
     }
     if (!location) {
@@ -208,14 +266,12 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
 
     setSubmitting(true);
     try {
-      // Upload video to Firebase Storage (or compact fallback URL if Storage blocked)
       let videoUrl = '';
       try {
         const storageRef = ref(storage, `incident_videos/${user.uid}/${Date.now()}.webm`);
         await uploadBytes(storageRef, videoBlob);
         videoUrl = await getDownloadURL(storageRef);
       } catch {
-        // Fallback: store compact base64 preview if <= 550KB so Firestore doc stays within 1MB
         videoUrl = await new Promise<string>((resolve) => {
           const reader = new FileReader();
           reader.onload = () => {
@@ -226,7 +282,6 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
         });
       }
 
-      // Check recent reports within 1km & 30 mins for Cross_Report signal
       let nearbyCount = 0;
       try {
         const recentQ = query(
@@ -261,16 +316,22 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
       });
 
       const reportId = `REP-${Date.now().toString(36).toUpperCase()}`;
+      const deviceInfo = getDeviceAuditInfo();
+      const resolvedState = location.state || user.state || user.userState || '';
 
-      // COLLECTION: incident_reports
       try {
-        await addDoc(collection(db, 'incident_reports'), {
+        const batch = writeBatch(db);
+        const reportRef = doc(collection(db, 'incident_reports'));
+        const auditRef = doc(collection(db, 'report_audit_logs'));
+
+        batch.set(reportRef, {
           reportId,
           userId: user.uid,
           userName: reporterName,
           userPhone: user.phone || '',
-          userState: user.userState || location.state || 'Lagos',
-          incidentState: location.state || user.userState || 'Lagos',
+          userState: resolvedState,
+          userProfilePic: reporterPhoto,
+          incidentState: resolvedState,
           incidentArea: location.area || location.city || '',
           incidentAddress: location.formattedAddress,
           incidentType,
@@ -286,11 +347,33 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
           crossReportScore: vScore.crossReport,
           guardAiScore: vScore.totalScore,
           aiVerdict: vScore.verdict,
-          status: 'PENDING VERIFICATION',
+          status: 'pending',
           adminDecision: 'pending',
+          visibleOnMap: false,
+          falseCount: 0,
+          falseBy: [],
+          isHidden: false,
+          device: deviceInfo,
           paymentStatus: 'unpaid',
           createdAt: serverTimestamp(),
         });
+
+        batch.update(doc(db, 'users', user.uid), {
+          lastReportAt: serverTimestamp(),
+        });
+
+        batch.set(auditRef, {
+          reportId,
+          userId: user.uid,
+          incidentType,
+          device: deviceInfo,
+          status: 'pending',
+          action: 'REPORT_SUBMITTED',
+          timestamp: serverTimestamp(),
+        });
+
+        await batch.commit();
+        setRecentReportTimesMs((prev) => [Date.now(), ...prev]);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, 'incident_reports');
       }
@@ -300,16 +383,23 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
           await updateDoc(doc(db, 'user_usage_stats', usageStatDocId), {
             totalReports: increment(1),
             lastActive: serverTimestamp(),
+            lastActiveAt: serverTimestamp(),
           });
         } catch {
           // non-blocking stat update
         }
       }
 
+      if (!isSubscriber) {
+        setFreeUserPostSubmitMsg(
+          'Thanks for keeping Nigeria safe! Report & Earn ₦5,000 is for subscribers only. Subscribe to ₦5,000 to earn on your next verified report.'
+        );
+      }
+
       setResultMsg(
-        `Your report is with Guard AI. Verifying... (Audio match: ${Math.round(
+        `Report submitted to 'pending' queue (hidden from map until Admin verifies). Audio match: ${Math.round(
           vScore.audioMatch * 100
-        )}% • V Score: ${Math.round(vScore.totalScore * 100)}%)`
+        )}% • V Score: ${Math.round(vScore.totalScore * 100)}%`
       );
     } catch (err: any) {
       setError(err?.message || 'Failed to submit report.');
@@ -318,7 +408,8 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
     }
   };
 
-  const canEarnSubmit = Boolean(videoBlob) && recordSeconds >= 15 && !submitting;
+  const canEarnSubmit =
+    eligibility.allowed && Boolean(videoBlob) && recordSeconds >= 15 && !submitting;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -337,7 +428,7 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
                 Report &amp; Earn ₦5,000
               </h2>
               <p className="text-xs text-slate-400 truncate">
-                Reporter: {reporterName} • Verified by Guard AI + Admin
+                Reporter: {reporterName} • {isSubscriber ? 'Subscriber Eligible (₦5,000)' : 'Free Community Report (₦0)'}
               </p>
             </div>
           </div>
@@ -351,14 +442,52 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
           </button>
         </div>
 
+        {/* Report & Earn Eligibility Banner */}
+        <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/40 text-xs flex flex-col gap-1.5">
+          <span className="font-extrabold text-orange-300">
+            Report &amp; Earn: ₦5,000 per verified report - Subscribers Only
+          </span>
+          {!isSubscriber && (
+            <p className="text-slate-200 leading-relaxed">
+              You are currently on the Free plan. You can still submit reports to keep Nigeria safe (₦0 reward, 0 Guard Score). Subscribe to ₦5,000 to earn on verified reports.
+            </p>
+          )}
+          {isRewardSuspended && (
+            <p className="text-[#FF2D55] font-bold">
+              Reward Suspension Active: 3 false reports this month suspended your Report &amp; Earn rewards for 30 days.
+            </p>
+          )}
+        </div>
+
         {resultMsg ? (
           <div className="p-5 rounded-2xl bg-[#00E67A]/10 border border-[#00E67A]/40 space-y-3 text-center">
             <CheckCircle2 className="w-10 h-10 text-[#00E67A] mx-auto" />
             <p className="text-sm font-semibold text-white">{resultMsg}</p>
-            <p className="text-xs text-slate-400">
-              Once Admin verifies and approves your report, it will be forwarded to{' '}
-              {location?.state || user.userState || 'State'} Police and ₦5,000 will be credited to your wallet.
-            </p>
+            {freeUserPostSubmitMsg ? (
+              <div className="p-3.5 rounded-xl bg-[#050B14] border border-[#FFC400]/50 space-y-2.5">
+                <p className="text-xs font-bold text-[#FFC400] leading-relaxed">
+                  {freeUserPostSubmitMsg}
+                </p>
+                {onOpenSubscriptions && (
+                  <button
+                    type="button"
+                    onClick={onOpenSubscriptions}
+                    className="w-full py-2.5 rounded-xl bg-[#2E9BFF] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Crown className="w-4 h-4" />
+                    <span>Subscribe to ₦5,000</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">
+                Once Admin verifies and approves your report, it will be forwarded to{' '}
+                {location?.state || user.state || user.userState || 'State'} Police and{' '}
+                {isRewardSuspended
+                  ? '₦0 (reward suspended for 30 days).'
+                  : '₦5,000 + Guard Score will be credited to your account.'}
+              </p>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -369,7 +498,24 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* What happened */}
+            {!eligibility.allowed && (
+              <div className="p-3.5 rounded-2xl bg-[#FFC400]/10 border border-[#FFC400]/45 text-xs text-[#FFC400] flex items-start gap-2.5">
+                <Clock className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-extrabold">Reporting Temporarily Locked</p>
+                  <p className="text-slate-200 leading-relaxed">{eligibility.message}</p>
+                </div>
+              </div>
+            )}
+            {user.flaggedReporter && (
+              <div className="p-3 rounded-2xl bg-[#FF2D55]/10 border border-[#FF2D55]/40 text-xs text-[#FF2D55] flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  Notice: Your account has a false-report flag under Admin review. Submit only genuine, verifiable evidence.
+                </span>
+              </div>
+            )}
+
             <div>
               <label className="block text-xs font-semibold text-slate-400 mb-1.5">
                 What happened?
@@ -392,15 +538,13 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
               </div>
             </div>
 
-            {/* Human Location (NO raw lat/lng) */}
             <div className="p-3 rounded-xl bg-[#050B14] border border-slate-800">
               <p className="text-[11px] font-semibold text-slate-400">Detected Location</p>
               <p className="text-sm font-semibold text-white mt-0.5">
-                {location ? location.formattedAddress : 'Waiting for live GPS address...'}
+                {location ? location.formattedAddress : 'Location Not Set — GPS required'}
               </p>
             </div>
 
-            {/* Compulsory Live In-App Video (15-60s) */}
             <div className="p-3.5 rounded-2xl bg-[#050B14] border border-slate-800 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -468,7 +612,6 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
               )}
             </div>
 
-            {/* Optional 1 Photo + Description */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[#050B14] border border-slate-800 text-xs font-semibold text-slate-300 hover:border-slate-600 cursor-pointer">
                 <Camera className="w-4 h-4 text-[#2E9BFF]" />
@@ -513,8 +656,10 @@ export const ReportEarnModal: React.FC<ReportEarnModalProps> = ({
               {submitting
                 ? 'Verifying & Sending...'
                 : !videoBlob || recordSeconds < 15
-                ? 'Video is compulsory to earn ₦5,000'
-                : 'Submit Report & Earn ₦5,000'}
+                ? 'Live 15s Video Required'
+                : isSubscriber
+                ? 'Submit Report & Earn ₦5,000'
+                : 'Submit Community Report (Free Plan - ₦0)'}
             </button>
           </form>
         )}
